@@ -1954,37 +1954,116 @@ scribe.json  # May contain secrets
 
 @cli.command()
 @click.option('--host', default='127.0.0.1', help='Host to bind to')
-@click.option('--port', default=5000, type=int, help='Port to bind to')
+@click.option('--app-port', default=5000, type=int, help='Port for application server')
+@click.option('--gui', is_flag=True, help='Enable GUI IDE server on separate port')
+@click.option('--gui-port', default=5001, type=int, help='Port for GUI IDE server')
 @click.option('--debug/--no-debug', default=True, help='Enable debug mode')
+@click.option('--no-reload', is_flag=True, help='Disable auto-reload on file changes')
 @click.option('--path', default='.', help='Project directory')
-def dev(host, port, debug, path):
+def dev(host, app_port, gui, gui_port, debug, no_reload, path):
     """
-    Run development server.
+    Run development server, optionally with GUI IDE on separate port.
+
+    By default, runs only the application server without GUI routes.
+    Use --gui flag to start both app and GUI servers simultaneously.
 
     Example:
-        scribe dev
-        scribe dev --port 8000
-        scribe dev --host 0.0.0.0 --no-debug
+        scribe dev                          # App only on port 5000
+        scribe dev --gui                    # App on 5000, GUI on 5001
+        scribe dev --app-port 3000 --gui-port 3001 --gui
+        scribe dev --no-reload              # Disable auto-reload
     """
-    from scribe.app import create_app
+    from scribe.app import create_app, create_standalone_gui_app
     from scribe.migrations import run_migrations
+    import threading
+    import time
+    import glob
 
     click.echo(f"Starting ScribeEngine development server...")
     click.echo(f"Project: {os.path.abspath(path)}")
 
-    # Create Flask app
-    app = create_app(path)
+    # Create app (no GUI routes)
+    app = create_app(path, enable_gui=False)
 
     # Run migrations
     click.echo("\nApplying database migrations...")
     db = app.config['DB']
     run_migrations(db, path)
 
-    # Start server
-    click.echo(f"\n✓ Server running at http://{host}:{port}")
-    click.echo(f"  Press CTRL+C to quit\n")
+    # Configure auto-reload to watch project files
+    extra_files = []
+    use_reloader = not no_reload
 
-    app.run(host=host, port=port, debug=debug)
+    if use_reloader:
+        # Watch .stpl template files
+        extra_files.extend(glob.glob(os.path.join(path, '**/*.stpl'), recursive=True))
+        # Watch lib/ Python files
+        extra_files.extend(glob.glob(os.path.join(path, 'lib/**/*.py'), recursive=True))
+        # Watch migrations
+        extra_files.extend(glob.glob(os.path.join(path, 'migrations/**/*.sql'), recursive=True))
+        # Watch config
+        config_file = os.path.join(path, 'scribe.json')
+        if os.path.exists(config_file):
+            extra_files.append(config_file)
+
+        click.echo(f"  Auto-reload: ENABLED - watching {len(extra_files)} project files")
+    else:
+        click.echo(f"  Auto-reload: DISABLED")
+
+    if gui:
+        # Security warning if not localhost
+        if host != '127.0.0.1' and host != 'localhost':
+            click.echo("\n⚠️  WARNING: GUI IDE is accessible from other machines!")
+            click.echo("   Only use --host 0.0.0.0 on trusted networks.")
+            click.echo("   Consider adding authentication for remote access.\n")
+
+        # Dual-server mode: app + GUI
+        click.echo(f"\n✓ Starting DUAL-SERVER mode:")
+        click.echo(f"  App server: http://{host}:{app_port}/")
+        click.echo(f"  GUI IDE: http://{host}:{gui_port}/")
+        click.echo(f"  Press CTRL+C to quit both servers\n")
+
+        # Create GUI app
+        gui_app = create_standalone_gui_app(path)
+
+        # Configure GUI with app server port for preview
+        # We pass the port only, the client will construct the URL using window.location.hostname
+        gui_app.config['APP_SERVER_PORT'] = app_port
+
+        # Define app server runner
+        def run_app_server():
+            app.run(host=host, port=app_port, debug=debug, use_reloader=False)
+
+        # Start app server in background daemon thread
+        app_thread = threading.Thread(target=run_app_server, daemon=True)
+        app_thread.start()
+
+        # Give app server time to start
+        time.sleep(0.5)
+
+        # Run GUI server in main thread (better signal handling)
+        # Enable reloader on GUI server to watch project files
+        gui_app.run(
+            host=host,
+            port=gui_port,
+            debug=debug,
+            use_reloader=use_reloader,
+            extra_files=extra_files if use_reloader else None
+        )
+
+    else:
+        # Single-server mode: app only
+        click.echo(f"\n✓ Development server running at http://{host}:{app_port}")
+        click.echo(f"  Mode: App only (use --gui to enable IDE)")
+        click.echo(f"  Press CTRL+C to quit\n")
+
+        app.run(
+            host=host,
+            port=app_port,
+            debug=debug,
+            use_reloader=use_reloader,
+            extra_files=extra_files if use_reloader else None
+        )
 
 
 @cli.command()
@@ -2011,8 +2090,8 @@ def serve(host, port, threads, path):
     click.echo(f"Starting ScribeEngine production server...")
     click.echo(f"Project: {os.path.abspath(path)}")
 
-    # Create Flask app
-    app = create_app(path)
+    # Create Flask app WITHOUT GUI (production mode)
+    app = create_app(path, enable_gui=False)
 
     # Run migrations
     click.echo("\nApplying database migrations...")
@@ -2023,104 +2102,11 @@ def serve(host, port, threads, path):
     click.echo(f"\n✓ Production server running at http://{host}:{port}")
     click.echo(f"  Server: Waitress (production WSGI)")
     click.echo(f"  Threads: {threads}")
+    click.echo(f"  GUI: DISABLED (production mode)")
     click.echo(f"  Press CTRL+C to quit\n")
 
     # Run with Waitress - production-ready WSGI server
     waitress_serve(app, host=host, port=port, threads=threads)
-
-
-@cli.command()
-@click.option('--host', default='127.0.0.1', help='Host to bind to (default: localhost only)')
-@click.option('--port', default=5001, type=int, help='Port to bind to')
-@click.option('--path', default='.', help='Project directory')
-@click.option('--no-reload', is_flag=True, help='Disable auto-reload on file changes')
-def gui(host, port, path, no_reload):
-    """
-    Launch the ScribeEngine IDE (web-based code editor).
-
-    Opens a browser-based development environment with:
-    - Code editor with .stpl syntax highlighting
-    - Live preview panel
-    - Database browser
-    - File management
-    - Auto-reload on file changes
-
-    By default, only accessible on localhost (127.0.0.1) for security.
-
-    Example:
-        scribe gui
-        scribe gui --port 5001
-        scribe gui --host 0.0.0.0  # Allow remote access (use with caution)
-        scribe gui --no-reload     # Disable auto-reload
-    """
-    from scribe.app import create_app
-    from scribe.migrations import run_migrations
-    import webbrowser
-    import threading
-
-    click.echo(f"Starting ScribeEngine IDE...")
-    click.echo(f"Project: {os.path.abspath(path)}")
-
-    # Security warning if not localhost
-    if host != '127.0.0.1' and host != 'localhost':
-        click.echo("\n⚠️  WARNING: IDE is accessible from other machines!")
-        click.echo("   Only use --host 0.0.0.0 on trusted networks.")
-        click.echo("   Consider adding authentication for remote access.\n")
-
-    # Create Flask app
-    app = create_app(path)
-
-    # Run migrations
-    click.echo("\nApplying database migrations...")
-    db = app.config['DB']
-    run_migrations(db, path)
-
-    # Open browser after a short delay
-    ide_url = f"http://{host}:{port}/__scribe_gui"
-
-    def open_browser():
-        import time
-        import os
-        # Only open browser in main process, not reloader process
-        if os.environ.get('WERKZEUG_RUN_MAIN') != 'true':
-            time.sleep(1.5)  # Wait for server to start
-            click.echo(f"\nOpening IDE in browser: {ide_url}")
-            webbrowser.open(ide_url)
-
-    threading.Thread(target=open_browser, daemon=True).start()
-
-    # Configure auto-reload to watch project files
-    extra_files = []
-    if not no_reload:
-        import glob
-        # Watch .stpl template files
-        extra_files.extend(glob.glob(os.path.join(path, '**/*.stpl'), recursive=True))
-        # Watch lib/ Python files
-        extra_files.extend(glob.glob(os.path.join(path, 'lib/**/*.py'), recursive=True))
-        # Watch migrations
-        extra_files.extend(glob.glob(os.path.join(path, 'migrations/**/*.sql'), recursive=True))
-        # Watch config
-        config_file = os.path.join(path, 'scribe.json')
-        if os.path.exists(config_file):
-            extra_files.append(config_file)
-
-        click.echo(f"  Watching {len(extra_files)} project files for changes")
-
-    # Start server
-    click.echo(f"\n✓ IDE server running at {ide_url}")
-    if not no_reload:
-        click.echo(f"  Auto-reload: ENABLED (server will restart on file changes)")
-    else:
-        click.echo(f"  Auto-reload: DISABLED")
-    click.echo(f"  Press CTRL+C to quit\n")
-
-    app.run(
-        host=host,
-        port=port,
-        debug=True,
-        use_reloader=not no_reload,
-        extra_files=extra_files if not no_reload else None
-    )
 
 
 @cli.group(name='db')

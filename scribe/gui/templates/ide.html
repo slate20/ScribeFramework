@@ -5,6 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ScribeEngine IDE</title>
 
+    <!-- IDE Configuration -->
+    <script>
+        // Construct app base URL using current hostname and configured port
+        // This allows the preview to work whether accessing locally or remotely
+        const appPort = {{ app_port }};
+        const appBase = `${window.location.protocol}//${window.location.hostname}:${appPort}`;
+
+        window.IDE_CONFIG = {
+            apiBase: '{{ api_base }}',
+            appBase: appBase
+        };
+    </script>
+
     <!-- Monaco Editor -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/editor/editor.main.min.css" integrity="sha512-+FrEXFgwhTBnPq6K6s3wO2koXT1z9YdPBDJru2s1iqLsa/FJcbvG9/eXGTvlf0vNqNgQP6LeLc8tILRmB6cGPA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
 

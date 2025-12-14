@@ -2,6 +2,11 @@
  * ScribeEngine IDE - Main JavaScript
  */
 
+// API base URL - determined at runtime based on current location
+// This allows the IDE to work whether mounted at root (/) or /__scribe_gui
+const API_BASE = window.IDE_CONFIG?.apiBase || '';
+const APP_BASE = window.IDE_CONFIG?.appBase || 'http://localhost:5000';
+
 // Global state
 const IDE = {
     editor: null,
@@ -752,7 +757,7 @@ function handleWindowResize() {
 async function loadFileTree() {
     console.log('IDE: Loading file tree...');
     try {
-        const response = await fetch('/__scribe_gui/api/files');
+        const response = await fetch(`${API_BASE}/api/files`);
         console.log('IDE: File tree response status:', response.status);
 
         if (!response.ok) {
@@ -1113,7 +1118,7 @@ async function openFile(filepath) {
             return;
         }
 
-        const response = await fetch(`/__scribe_gui/api/file/${filepath}`);
+        const response = await fetch(`${API_BASE}/api/file/${filepath}`);
         const data = await response.json();
 
         if (data.error) {
@@ -1289,7 +1294,7 @@ async function saveCurrentFile() {
     console.log(`IDE: Saving ${IDE.currentFile}, ${content.length} bytes`);
 
     try {
-        const response = await fetch(`/__scribe_gui/api/file/${IDE.currentFile}`, {
+        const response = await fetch(`${API_BASE}/api/file/${IDE.currentFile}`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -1427,7 +1432,7 @@ async function createNewFile() {
     }
 
     try {
-        const response = await fetch('/__scribe_gui/api/file/new', {
+        const response = await fetch(`${API_BASE}/api/file/new`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -1472,7 +1477,7 @@ async function createNewFolder() {
     }
 
     try {
-        const response = await fetch('/__scribe_gui/api/file/new', {
+        const response = await fetch(`${API_BASE}/api/file/new`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -1528,7 +1533,9 @@ function loadPreview() {
     }
 
     const iframe = document.getElementById('preview-frame');
-    iframe.src = url;
+    // If URL is relative (starts with /), prepend the app base URL
+    const fullUrl = url.startsWith('/') ? APP_BASE + url : url;
+    iframe.src = fullUrl;
 
     setStatus(`Loading preview: ${url}`);
 }
@@ -1551,7 +1558,7 @@ function refreshPreview() {
 async function loadDatabaseTables() {
     try {
         // First, get available database connections
-        const connectionsResponse = await fetch('/__scribe_gui/api/database/connections');
+        const connectionsResponse = await fetch(`${API_BASE}/api/database/connections`);
         const connectionsData = await connectionsResponse.json();
 
         if (!connectionsData.connections || connectionsData.connections.length === 0) {
@@ -1568,7 +1575,7 @@ async function loadDatabaseTables() {
         window.currentDbConnection = connectionName;
 
         // Now load tables for this connection
-        const response = await fetch(`/__scribe_gui/api/database/${connectionName}/tables`);
+        const response = await fetch(`${API_BASE}/api/database/${connectionName}/tables`);
         const data = await response.json();
 
         const select = document.getElementById('table-select');
@@ -1594,7 +1601,7 @@ async function loadTableData(tableName) {
     try {
         // Use the stored connection name (default to 'default' if not set)
         const connectionName = window.currentDbConnection || 'default';
-        const response = await fetch(`/__scribe_gui/api/database/${connectionName}/table/${tableName}`);
+        const response = await fetch(`${API_BASE}/api/database/${connectionName}/table/${tableName}`);
         const data = await response.json();
 
         const content = document.getElementById('database-content');
@@ -1631,7 +1638,7 @@ async function loadTableData(tableName) {
  */
 async function loadRoutes() {
     try {
-        const response = await fetch('/__scribe_gui/api/routes');
+        const response = await fetch(`${API_BASE}/api/routes`);
         const data = await response.json();
 
         const routesList = document.getElementById('routes-list');

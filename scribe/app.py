@@ -104,13 +104,20 @@ def wrap_template_with_layout(template: str, base_template_name: str = 'base.stp
     )
 
 
-def create_app(project_path: str = '.', config: Optional[Dict[str, Any]] = None) -> Flask:
+def create_app(
+    project_path: str = '.',
+    config: Optional[Dict[str, Any]] = None,
+    enable_gui: bool = True,
+    gui_url_prefix: str = '/__scribe_gui'
+) -> Flask:
     """
     Create and configure a Flask application from ScribeEngine templates.
 
     Args:
         project_path: Path to the project directory containing .stpl files
         config: Optional configuration dict (overrides scribe.json)
+        enable_gui: Whether to register GUI blueprint (default: True)
+        gui_url_prefix: URL prefix for GUI routes (default: '/__scribe_gui')
 
     Returns:
         Configured Flask application
@@ -142,6 +149,9 @@ def create_app(project_path: str = '.', config: Optional[Dict[str, Any]] = None)
     # Load configuration
     app_config = load_config(project_path, config)
     app.config.update(app_config)
+
+    # Store project path for GUI routes
+    app.config['PROJECT_PATH'] = project_path
 
     # Ensure secret key is set (required for sessions)
     if not app.config.get('SECRET_KEY'):
@@ -179,11 +189,73 @@ def create_app(project_path: str = '.', config: Optional[Dict[str, Any]] = None)
     # Add Jinja2 global functions
     setup_jinja_globals(app)
 
-    # Register GUI IDE blueprint (optional, for development)
-    # This is always registered but only accessible when explicitly requested
-    register_gui_blueprint(app)
+    # Register GUI IDE blueprint (optional, controlled by enable_gui parameter)
+    if enable_gui:
+        register_gui_blueprint(app, url_prefix=gui_url_prefix)
+        print(f"  GUI IDE enabled at: {gui_url_prefix}")
 
     print(f"\n✓ ScribeEngine app created with {len(routes)} route(s)")
+
+    return app
+
+
+def create_standalone_gui_app(project_path: str = '.', config: Optional[Dict[str, Any]] = None) -> Flask:
+    """
+    Create a standalone GUI-only Flask application.
+
+    This creates an app with ONLY the GUI IDE routes (no user application routes).
+    Used by `scribe dev --gui` command.
+
+    Args:
+        project_path: Path to the project directory
+        config: Optional configuration dict (overrides scribe.json)
+
+    Returns:
+        Flask application with only GUI routes mounted at root
+    """
+    # Create minimal Flask app (no static folder, no user routes)
+    project_path = os.path.abspath(project_path)
+
+    app = Flask(
+        __name__,
+        instance_relative_config=True,
+        static_folder=None,  # Disable app-level static folder (blueprint has its own)
+        template_folder=project_path  # For accessing project files
+    )
+
+    # Load configuration (needed for database and secret key)
+    app_config = load_config(project_path, config)
+    app.config.update(app_config)
+
+    # Store project path
+    app.config['PROJECT_PATH'] = project_path
+
+    # Ensure secret key is set
+    if not app.config.get('SECRET_KEY'):
+        import secrets
+        app.config['SECRET_KEY'] = secrets.token_hex(32)
+        print("Warning: No SECRET_KEY configured, generated a random one.")
+
+    # Create database manager (GUI needs this for database browser)
+    if 'databases' not in app_config and 'database' in app_config:
+        app_config['databases'] = {'default': app_config['database']}
+    elif 'databases' not in app_config:
+        app_config['databases'] = {'default': {'type': 'sqlite', 'database': 'app.db'}}
+
+    db = DatabaseManager(app_config)
+    app.config['DB'] = db
+
+    # Setup CSRF protection (GUI forms need this)
+    from flask_wtf.csrf import CSRFProtect
+    csrf = CSRFProtect(app)
+    app.config['CSRF'] = csrf
+
+    # Register GUI blueprint at ROOT (not /__scribe_gui)
+    register_gui_blueprint(app, url_prefix='')
+
+    print(f"\n✓ Standalone GUI app created")
+    print(f"  Project: {project_path}")
+    print(f"  GUI routes mounted at: / (root)")
 
     return app
 
@@ -440,15 +512,17 @@ def apply_decorators(handler, decorator_names: List[str], helpers: Dict[str, Any
     return handler
 
 
-def register_gui_blueprint(app: Flask):
+def register_gui_blueprint(app: Flask, url_prefix: str = '/__scribe_gui'):
     """
     Register the GUI IDE blueprint.
 
     Args:
         app: Flask application
+        url_prefix: URL prefix for GUI routes (default: '/__scribe_gui')
     """
     try:
-        from scribe.gui import gui_bp
+        from scribe.gui import create_gui_blueprint
+        gui_bp = create_gui_blueprint(url_prefix=url_prefix)
         app.register_blueprint(gui_bp)
     except Exception as e:
         print(f"Warning: Could not register GUI blueprint: {e}")

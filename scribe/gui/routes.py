@@ -6,16 +6,31 @@ Handles all routes for the ScribeEngine IDE interface.
 
 import os
 import json
-from flask import render_template, request, jsonify, send_from_directory, abort, g
+from flask import render_template, request, jsonify, send_from_directory, abort, g, current_app
 from pathlib import Path
 
 from scribe.gui import gui_bp
 
 
+def get_project_root():
+    """Get project root path from app config or fallback to current directory"""
+    return Path(current_app.config.get('PROJECT_PATH', os.getcwd()))
+
+
 @gui_bp.route('/')
 def index():
     """Main IDE interface"""
-    return render_template('ide.html')
+    from flask import current_app, url_for, request
+
+    # Get the actual registered blueprint (not the module-level one)
+    # to get the correct URL prefix
+    registered_bp = current_app.blueprints[request.blueprint]
+    api_base = registered_bp.url_prefix or ''
+
+    # Get app server port from config
+    app_port = current_app.config.get('APP_SERVER_PORT', 5000)
+
+    return render_template('ide.html', api_base=api_base, app_port=app_port)
 
 
 @gui_bp.route('/test')
@@ -30,7 +45,7 @@ def debug():
     import os
     from flask import current_app
 
-    project_root = Path(os.getcwd())
+    project_root = get_project_root()
 
     debug_info = {
         'project_root': str(project_root),
@@ -49,7 +64,7 @@ def list_files():
     List all files in the project directory
     Returns a tree structure of files and folders
     """
-    project_root = Path(os.getcwd())
+    project_root = get_project_root()
 
     def build_tree(path):
         """Recursively build file tree"""
@@ -89,7 +104,7 @@ def get_file(filepath):
     """
     Get contents of a specific file
     """
-    project_root = Path(os.getcwd())
+    project_root = get_project_root()
     file_path = project_root / filepath
 
     # Security: ensure file is within project directory
@@ -128,7 +143,7 @@ def save_file(filepath):
     """
     Save contents to a file
     """
-    project_root = Path(os.getcwd())
+    project_root = get_project_root()
     file_path = project_root / filepath
 
     # Security: ensure file is within project directory
@@ -160,7 +175,7 @@ def delete_file(filepath):
     """
     Delete a file
     """
-    project_root = Path(os.getcwd())
+    project_root = get_project_root()
     file_path = project_root / filepath
 
     # Security: ensure file is within project directory
@@ -192,7 +207,7 @@ def create_file():
     """
     Create a new file or directory
     """
-    project_root = Path(os.getcwd())
+    project_root = get_project_root()
     data = request.get_json()
 
     path = data.get('path', '')
@@ -232,7 +247,7 @@ def get_routes():
     from scribe.parser import TemplateParser
     import glob
 
-    project_root = Path(os.getcwd())
+    project_root = get_project_root()
     parser = TemplateParser()
     all_routes = []
 
