@@ -1954,36 +1954,31 @@ scribe.json  # May contain secrets
 
 @cli.command()
 @click.option('--host', default='127.0.0.1', help='Host to bind to')
-@click.option('--app-port', default=5000, type=int, help='Port for application server')
-@click.option('--gui', is_flag=True, help='Enable GUI IDE server on separate port')
-@click.option('--gui-port', default=5001, type=int, help='Port for GUI IDE server')
+@click.option('--port', default=5000, type=int, help='Port to bind to')
 @click.option('--debug/--no-debug', default=True, help='Enable debug mode')
 @click.option('--no-reload', is_flag=True, help='Disable auto-reload on file changes')
 @click.option('--path', default='.', help='Project directory')
-def dev(host, app_port, gui, gui_port, debug, no_reload, path):
+def dev(host, port, debug, no_reload, path):
     """
-    Run development server, optionally with GUI IDE on separate port.
-
-    By default, runs only the application server without GUI routes.
-    Use --gui flag to start both app and GUI servers simultaneously.
+    Run development server for your ScribeEngine application.
 
     Example:
-        scribe dev                          # App only on port 5000
-        scribe dev --gui                    # App on 5000, GUI on 5001
-        scribe dev --app-port 3000 --gui-port 3001 --gui
-        scribe dev --no-reload              # Disable auto-reload
+        scribe dev                    # Run on localhost:5000
+        scribe dev --port 3000        # Custom port
+        scribe dev --no-reload        # Disable auto-reload
+        scribe dev --host 0.0.0.0     # Allow external connections
+
+    To use the IDE, run 'scribe ide' in a separate terminal.
     """
-    from scribe.app import create_app, create_standalone_gui_app
+    from scribe.app import create_app
     from scribe.migrations import run_migrations
-    import threading
-    import time
     import glob
 
     click.echo(f"Starting ScribeEngine development server...")
     click.echo(f"Project: {os.path.abspath(path)}")
 
-    # Create app (no GUI routes)
-    app = create_app(path, enable_gui=False)
+    # Create app
+    app = create_app(path)
 
     # Run migrations
     click.echo("\nApplying database migrations...")
@@ -2010,60 +2005,103 @@ def dev(host, app_port, gui, gui_port, debug, no_reload, path):
     else:
         click.echo(f"  Auto-reload: DISABLED")
 
-    if gui:
-        # Security warning if not localhost
-        if host != '127.0.0.1' and host != 'localhost':
-            click.echo("\n⚠️  WARNING: GUI IDE is accessible from other machines!")
-            click.echo("   Only use --host 0.0.0.0 on trusted networks.")
-            click.echo("   Consider adding authentication for remote access.\n")
+    # Run server
+    click.echo(f"\n✓ Development server running at http://{host}:{port}")
+    click.echo(f"  Press CTRL+C to quit")
+    click.echo(f"\n💡 Tip: Run 'scribe ide' in another terminal to open the IDE\n")
 
-        # Dual-server mode: app + GUI
-        click.echo(f"\n✓ Starting DUAL-SERVER mode:")
-        click.echo(f"  App server: http://{host}:{app_port}/")
-        click.echo(f"  GUI IDE: http://{host}:{gui_port}/")
-        click.echo(f"  Press CTRL+C to quit both servers\n")
+    app.run(
+        host=host,
+        port=port,
+        debug=debug,
+        use_reloader=use_reloader,
+        extra_files=extra_files if use_reloader else None
+    )
 
-        # Create GUI app
-        gui_app = create_standalone_gui_app(path)
 
-        # Configure GUI with app server port for preview
-        # We pass the port only, the client will construct the URL using window.location.hostname
-        gui_app.config['APP_SERVER_PORT'] = app_port
+@cli.command()
+@click.option('--host', default='127.0.0.1', help='Host to bind to')
+@click.option('--port', default=5001, type=int, help='Port to bind to')
+@click.option('--app-port', default=5000, type=int, help='Port where app server is running (for preview)')
+@click.option('--debug/--no-debug', default=True, help='Enable debug mode')
+@click.option('--no-reload', is_flag=True, help='Disable auto-reload on file changes')
+@click.option('--path', default='.', help='Project directory')
+def ide(host, port, app_port, debug, no_reload, path):
+    """
+    Run the ScribeEngine IDE (web-based code editor).
 
-        # Define app server runner
-        def run_app_server():
-            app.run(host=host, port=app_port, debug=debug, use_reloader=False)
+    The IDE provides:
+    - Code editor with .stpl syntax highlighting
+    - Live preview of your app
+    - Database browser
+    - File management
+    - Route explorer
 
-        # Start app server in background daemon thread
-        app_thread = threading.Thread(target=run_app_server, daemon=True)
-        app_thread.start()
+    Example:
+        scribe ide                        # Run IDE on localhost:5001
+        scribe ide --port 3001            # Custom IDE port
+        scribe ide --app-port 8000        # Preview app on port 8000
+        scribe ide --host 0.0.0.0         # Allow remote access (use with caution)
 
-        # Give app server time to start
-        time.sleep(0.5)
+    Note: Run 'scribe dev' in a separate terminal to start your app server.
+    """
+    from scribe.app import create_standalone_gui_app
+    from scribe.migrations import run_migrations
+    import glob
 
-        # Run GUI server in main thread (better signal handling)
-        # Enable reloader on GUI server to watch project files
-        gui_app.run(
-            host=host,
-            port=gui_port,
-            debug=debug,
-            use_reloader=use_reloader,
-            extra_files=extra_files if use_reloader else None
-        )
+    # Security warning if not localhost
+    if host != '127.0.0.1' and host != 'localhost':
+        click.echo("\n⚠️  WARNING: IDE will be accessible from other machines!")
+        click.echo("   Only use --host 0.0.0.0 on trusted networks.")
+        click.echo("   Consider adding authentication for remote access.\n")
 
+    click.echo(f"Starting ScribeEngine IDE...")
+    click.echo(f"Project: {os.path.abspath(path)}")
+
+    # Create GUI app
+    gui_app = create_standalone_gui_app(path)
+
+    # Configure app server port for preview
+    gui_app.config['APP_SERVER_PORT'] = app_port
+
+    # Run migrations (so database browser works)
+    click.echo("\nApplying database migrations...")
+    db = gui_app.config['DB']
+    run_migrations(db, path)
+
+    # Configure auto-reload to watch project files
+    extra_files = []
+    use_reloader = not no_reload
+
+    if use_reloader:
+        # Watch .stpl template files
+        extra_files.extend(glob.glob(os.path.join(path, '**/*.stpl'), recursive=True))
+        # Watch lib/ Python files
+        extra_files.extend(glob.glob(os.path.join(path, 'lib/**/*.py'), recursive=True))
+        # Watch migrations
+        extra_files.extend(glob.glob(os.path.join(path, 'migrations/**/*.sql'), recursive=True))
+        # Watch config
+        config_file = os.path.join(path, 'scribe.json')
+        if os.path.exists(config_file):
+            extra_files.append(config_file)
+
+        click.echo(f"  Auto-reload: ENABLED - watching {len(extra_files)} project files")
     else:
-        # Single-server mode: app only
-        click.echo(f"\n✓ Development server running at http://{host}:{app_port}")
-        click.echo(f"  Mode: App only (use --gui to enable IDE)")
-        click.echo(f"  Press CTRL+C to quit\n")
+        click.echo(f"  Auto-reload: DISABLED")
 
-        app.run(
-            host=host,
-            port=app_port,
-            debug=debug,
-            use_reloader=use_reloader,
-            extra_files=extra_files if use_reloader else None
-        )
+    # Run IDE server
+    click.echo(f"\n✓ IDE running at http://{host}:{port}")
+    click.echo(f"  Preview target: http://localhost:{app_port}")
+    click.echo(f"  Press CTRL+C to quit")
+    click.echo(f"\n💡 Tip: Make sure 'scribe dev' is running on port {app_port}\n")
+
+    gui_app.run(
+        host=host,
+        port=port,
+        debug=debug,
+        use_reloader=use_reloader,
+        extra_files=extra_files if use_reloader else None
+    )
 
 
 @cli.command()
@@ -2090,8 +2128,8 @@ def serve(host, port, threads, path):
     click.echo(f"Starting ScribeEngine production server...")
     click.echo(f"Project: {os.path.abspath(path)}")
 
-    # Create Flask app WITHOUT GUI (production mode)
-    app = create_app(path, enable_gui=False)
+    # Create Flask app (production mode)
+    app = create_app(path)
 
     # Run migrations
     click.echo("\nApplying database migrations...")
@@ -2102,7 +2140,6 @@ def serve(host, port, threads, path):
     click.echo(f"\n✓ Production server running at http://{host}:{port}")
     click.echo(f"  Server: Waitress (production WSGI)")
     click.echo(f"  Threads: {threads}")
-    click.echo(f"  GUI: DISABLED (production mode)")
     click.echo(f"  Press CTRL+C to quit\n")
 
     # Run with Waitress - production-ready WSGI server
@@ -2206,4 +2243,7 @@ def uninstall(yes):
 
 
 if __name__ == '__main__':
+    # Required for multiprocessing on Windows and for proper process spawning
+    import multiprocessing
+    multiprocessing.freeze_support()
     cli()

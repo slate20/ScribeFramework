@@ -2,6 +2,9 @@
 GUI IDE Routes
 
 Handles all routes for the ScribeEngine IDE interface.
+
+Note: Routes are registered programmatically in scribe/gui/__init__.py
+via the _register_routes() function. Do not use decorators here.
 """
 
 import os
@@ -9,15 +12,12 @@ import json
 from flask import render_template, request, jsonify, send_from_directory, abort, g, current_app
 from pathlib import Path
 
-from scribe.gui import gui_bp
-
 
 def get_project_root():
     """Get project root path from app config or fallback to current directory"""
     return Path(current_app.config.get('PROJECT_PATH', os.getcwd()))
 
 
-@gui_bp.route('/')
 def index():
     """Main IDE interface"""
     from flask import current_app, url_for, request
@@ -33,13 +33,11 @@ def index():
     return render_template('ide.html', api_base=api_base, app_port=app_port)
 
 
-@gui_bp.route('/test')
 def test():
     """Test page for API endpoints"""
     return render_template('test.html')
 
 
-@gui_bp.route('/debug')
 def debug():
     """Debug page to test API endpoints"""
     import os
@@ -58,7 +56,6 @@ def debug():
     return f"<pre>{json.dumps(debug_info, indent=2)}</pre>"
 
 
-@gui_bp.route('/api/files')
 def list_files():
     """
     List all files in the project directory
@@ -99,7 +96,6 @@ def list_files():
     return jsonify({'files': tree, 'root': str(project_root)})
 
 
-@gui_bp.route('/api/file/<path:filepath>')
 def get_file(filepath):
     """
     Get contents of a specific file
@@ -138,7 +134,6 @@ def get_file(filepath):
         }), 400
 
 
-@gui_bp.route('/api/file/<path:filepath>', methods=['POST'])
 def save_file(filepath):
     """
     Save contents to a file
@@ -170,7 +165,6 @@ def save_file(filepath):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-@gui_bp.route('/api/file/<path:filepath>', methods=['DELETE'])
 def delete_file(filepath):
     """
     Delete a file
@@ -202,7 +196,6 @@ def delete_file(filepath):
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-@gui_bp.route('/api/file/new', methods=['POST'])
 def create_file():
     """
     Create a new file or directory
@@ -238,7 +231,6 @@ def create_file():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
-@gui_bp.route('/api/routes')
 def get_routes():
     """
     Get all routes defined in .stpl files
@@ -272,7 +264,6 @@ def get_routes():
     return jsonify({'routes': all_routes})
 
 
-@gui_bp.route('/api/database/connections')
 def get_database_connections():
     """
     Get list of available database connections
@@ -293,7 +284,6 @@ def get_database_connections():
         return jsonify({'connections': [], 'error': str(e)}), 500
 
 
-@gui_bp.route('/api/database/<connection_name>/tables')
 def get_database_tables(connection_name):
     """
     Get list of all database tables for a specific connection
@@ -348,7 +338,6 @@ def get_database_tables(connection_name):
         return jsonify({'tables': [], 'error': str(e)}), 500
 
 
-@gui_bp.route('/api/database/<connection_name>/table/<table_name>')
 def get_table_data(connection_name, table_name):
     """
     Get data from a specific table with pagination
