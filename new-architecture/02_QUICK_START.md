@@ -13,9 +13,7 @@ This guide walks you through building a complete login system in 10 minutes.
 
 ## Step 1: Install ScribeEngine
 
-```bash
-pip install scribe-engine
-```
+Download the latest release and extract. Use the included `install.sh` script to install scribe!
 
 ---
 
