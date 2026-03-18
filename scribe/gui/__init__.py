@@ -44,6 +44,8 @@ def _register_routes(bp):
 
     This approach allows us to create the blueprint dynamically without
     decorator-based binding issues.
+
+    Note: Blueprint is exempt from CSRF globally (see create_blueprint below).
     """
     from scribe.gui import routes
 

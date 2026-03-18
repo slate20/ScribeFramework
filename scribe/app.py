@@ -238,13 +238,20 @@ def create_standalone_gui_app(project_path: str = '.', config: Optional[Dict[str
 
     # Setup CSRF protection (GUI forms need this)
     from flask_wtf.csrf import CSRFProtect
-    csrf = CSRFProtect(app)
-    app.config['CSRF'] = csrf
+    csrf = CSRFProtect()
 
     # Create and register GUI blueprint at root
     from scribe.gui import create_blueprint
     gui_bp = create_blueprint()
     app.register_blueprint(gui_bp)
+
+    # Exempt GUI API routes from CSRF (development tool, localhost only)
+    # This prevents CSRF token expiration issues during long IDE sessions
+    csrf.exempt(gui_bp)
+
+    # Initialize CSRF protection
+    csrf.init_app(app)
+    app.config['CSRF'] = csrf
 
     print(f"\n✓ Standalone GUI app created")
     print(f"  Project: {project_path}")

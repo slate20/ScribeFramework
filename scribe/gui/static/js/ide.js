@@ -590,7 +590,16 @@ function initEventListeners() {
     });
 
     // Database controls
-    document.getElementById('refresh-tables-btn').addEventListener('click', loadDatabaseTables);
+    document.getElementById('connection-select').addEventListener('change', (e) => {
+        if (e.target.value) {
+            window.currentDbConnection = e.target.value;
+            loadTablesForConnection(e.target.value);
+        }
+    });
+    document.getElementById('refresh-tables-btn').addEventListener('click', () => {
+        const connectionName = window.currentDbConnection || 'default';
+        loadTablesForConnection(connectionName);
+    });
     document.getElementById('table-select').addEventListener('change', (e) => {
         if (e.target.value) loadTableData(e.target.value);
     });
@@ -1321,7 +1330,19 @@ async function saveCurrentFile() {
             fileInfo.modified = false;
 
             document.getElementById('save-btn').disabled = true;
-            setStatus(`Saved ${IDE.currentFile}`);
+
+            // Auto-refresh preview after save (if preview is loaded)
+            const iframe = document.getElementById('preview-frame');
+            if (iframe && iframe.src) {
+                console.log('IDE: Auto-refreshing preview after save');
+                // Add a small delay to ensure server has processed the file
+                setTimeout(() => {
+                    iframe.src = iframe.src; // Reload iframe
+                    setStatus(`Saved ${IDE.currentFile} and refreshed preview`);
+                }, 100);
+            } else {
+                setStatus(`Saved ${IDE.currentFile}`);
+            }
         } else {
             setStatus(`Error saving: ${data.error}`, 'error');
         }
@@ -1553,44 +1574,92 @@ function refreshPreview() {
 }
 
 /**
- * Load database tables
+ * Load database connections and populate connection selector
  */
 async function loadDatabaseTables() {
     try {
-        // First, get available database connections
+        console.log('IDE: Loading database connections...');
+
+        // Get available database connections
         const connectionsResponse = await fetch(`${API_BASE}/api/database/connections`);
         const connectionsData = await connectionsResponse.json();
 
         if (!connectionsData.connections || connectionsData.connections.length === 0) {
-            console.error('No database connections available');
+            console.error('IDE: No database connections available');
+            const connectionSelect = document.getElementById('connection-select');
+            connectionSelect.innerHTML = '<option value="">No databases configured</option>';
             return;
         }
 
-        // Use 'default' connection if available, otherwise use first connection
-        const connectionName = connectionsData.connections.includes('default')
+        console.log('IDE: Found connections:', connectionsData.connections);
+
+        // Populate connection selector
+        const connectionSelect = document.getElementById('connection-select');
+        connectionSelect.innerHTML = '';
+
+        connectionsData.connections.forEach(connectionName => {
+            const option = document.createElement('option');
+            option.value = connectionName;
+            option.textContent = connectionName;
+            connectionSelect.appendChild(option);
+        });
+
+        // Select 'default' if available, otherwise select first connection
+        const defaultConnection = connectionsData.connections.includes('default')
             ? 'default'
             : connectionsData.connections[0];
 
-        // Store current connection for use in loadTableData
-        window.currentDbConnection = connectionName;
+        connectionSelect.value = defaultConnection;
+        window.currentDbConnection = defaultConnection;
 
-        // Now load tables for this connection
+        // Load tables for the selected connection
+        await loadTablesForConnection(defaultConnection);
+
+    } catch (error) {
+        console.error('IDE: Error loading database connections:', error);
+    }
+}
+
+/**
+ * Load tables for a specific database connection
+ */
+async function loadTablesForConnection(connectionName) {
+    try {
+        console.log(`IDE: Loading tables for connection: ${connectionName}`);
+
         const response = await fetch(`${API_BASE}/api/database/${connectionName}/tables`);
         const data = await response.json();
 
-        const select = document.getElementById('table-select');
-        select.innerHTML = '<option value="">Select a table...</option>';
+        const tableSelect = document.getElementById('table-select');
+        tableSelect.innerHTML = '<option value="">Select a table...</option>';
 
-        if (data.tables) {
+        if (data.error) {
+            console.error('IDE: Error loading tables:', data.error);
+            tableSelect.innerHTML = `<option value="">Error: ${data.error}</option>`;
+            return;
+        }
+
+        if (data.tables && data.tables.length > 0) {
+            console.log(`IDE: Loaded ${data.tables.length} tables`);
             data.tables.forEach(table => {
                 const option = document.createElement('option');
                 option.value = table;
                 option.textContent = table;
-                select.appendChild(option);
+                tableSelect.appendChild(option);
             });
+        } else {
+            console.log('IDE: No tables found in this database');
+            tableSelect.innerHTML = '<option value="">No tables found</option>';
         }
+
+        // Clear table content
+        const content = document.getElementById('database-content');
+        content.innerHTML = '<p class="placeholder-text">Select a table to view its data</p>';
+
     } catch (error) {
-        console.error('Error loading tables:', error);
+        console.error('IDE: Error loading tables:', error);
+        const tableSelect = document.getElementById('table-select');
+        tableSelect.innerHTML = `<option value="">Error loading tables</option>`;
     }
 }
 
