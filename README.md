@@ -4,11 +4,11 @@
 
 ### **Key Features**
 
-✅ **Inline Python in templates** - Write logic where you use it
-✅ **Auto-loading modules** - Drop `.py` files in `lib/` → automatically available
-✅ **Multi-database support** - SQLite, PostgreSQL, MySQL, MSSQL
-✅ **Integrated IDE** - Web-based editor with live preview
-✅ **Flask underneath** - Full Flask ecosystem available
+- **Inline Python in templates** - Write logic where you use it
+- **Auto-loading modules** - Drop `.py` files in `lib/` → automatically available
+- **Multi-database support** - SQLite, PostgreSQL, MySQL, MSSQL
+- **Integrated IDE** - Web-based editor with live preview
+- **Flask underneath** - Full Flask ecosystem available
 
 ---
 
