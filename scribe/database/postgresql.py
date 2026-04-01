@@ -115,7 +115,7 @@ class PostgreSQLAdapter(DatabaseAdapter):
         if self.connection.closed != 0:
             return False
         # Also verify the connection is in a usable transaction state
-        if self.connection.status == psycopg2.extensions.STATUS_IN_ERROR:
+        if self.connection.get_transaction_status() == psycopg2.extensions.TRANSACTION_STATUS_INERROR:
             return False
         return True
 

@@ -11,9 +11,10 @@ This module handles:
 import os
 import re
 import glob
+import inspect
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from flask import Flask, request, session, g, render_template_string
+from flask import Flask, request, session, g, render_template_string, Response, stream_with_context
 from jinja2 import Template
 
 from scribe.parser import TemplateParser
@@ -21,6 +22,7 @@ from scribe.database import create_adapter, DatabaseManager
 from scribe.execution import ExecutionContext
 from scribe.loader import load_helper_modules
 from scribe.helpers import response, forms, auth
+from scribe.helpers.auth import configure_auth  # NEW
 
 
 def should_skip_layout(template: str) -> bool:
@@ -155,6 +157,10 @@ def create_app(
         app.config['SECRET_KEY'] = secrets.token_hex(32)
         print("Warning: No SECRET_KEY configured, generated a random one. Set it in scribe.json for production.")
 
+    # NEW: Store auth configuration on the app so @require_auth can read it.
+    # Reads the optional 'auth' block from scribe.json, falls back to defaults.
+    configure_auth(app, app_config.get('auth', {}))
+
     # Create database manager (supports multiple named connections)
     # Handle both old 'database' key and new 'databases' key
     if 'databases' not in app_config and 'database' in app_config:
@@ -226,6 +232,9 @@ def create_standalone_gui_app(project_path: str = '.', config: Optional[Dict[str
         import secrets
         app.config['SECRET_KEY'] = secrets.token_hex(32)
         print("Warning: No SECRET_KEY configured, generated a random one.")
+
+    # NEW: Store auth configuration on the app.
+    configure_auth(app, app_config.get('auth', {}))
 
     # Create database manager (GUI needs this for database browser)
     if 'databases' not in app_config and 'database' in app_config:
@@ -379,7 +388,8 @@ def register_routes(
         )
 
         methods_str = ', '.join(route.methods)
-        print(f"  ✓ {route.path} [{methods_str}]")
+        fragment_note = ' [fragment]' if route.no_layout else ''
+        print(f"  ✓ {route.path} [{methods_str}]{fragment_note}")
 
 
 def create_route_handler(route, db, helpers: Dict[str, Any], app: Flask, project_path: str):
@@ -396,6 +406,14 @@ def create_route_handler(route, db, helpers: Dict[str, Any], app: Flask, project
     Returns:
         Flask view function
     """
+    # Capture the no_layout flag once at registration time so each handler
+    # knows at render time whether to skip base.stpl wrapping.  Capturing
+    # here (rather than reading route.no_layout inside the closure) avoids
+    # a late-binding issue if the route object were ever mutated after
+    # registration.
+    skip_layout = route.no_layout
+    is_sse = route.is_sse
+
     def handler(**url_params):
         # Create execution context
         context = ExecutionContext(
@@ -406,7 +424,24 @@ def create_route_handler(route, db, helpers: Dict[str, Any], app: Flask, project
             helpers=helpers,
             route_params=url_params
         )
+        context.current_template = route.template
 
+        def sse_wrapper(generator):
+            """
+            Wraps a generator to output Server-Sent Events (SSE) format.
+            If a yield is not already in SSE format (data: ...\n\n), it will be wrapped.
+            """
+            for chunk in generator:
+                if chunk is None:
+                    continue
+
+                s_chunk = str(chunk)
+                if not s_chunk.startswith('data:') and not s_chunk.startswith('event:'):
+                    # Wrap each line in data: ...
+                    lines = s_chunk.split('\n')
+                    yield "\n".join(f"data: {line}" for line in lines) + "\n\n"
+                else:
+                    yield s_chunk
         # Add helper functions
         context.set_variable('redirect', response.redirect)
         context.set_variable('abort', response.abort)
@@ -423,7 +458,17 @@ def create_route_handler(route, db, helpers: Dict[str, Any], app: Flask, project
 
                 # If the code set a return value, return it
                 if context.has_return_value():
-                    return context.get_variable('__return__')
+                    res = context.get_variable('__return__')
+                    
+                    # Handle SSE generator
+                    if is_sse and inspect.isgenerator(res):
+                        return Response(stream_with_context(sse_wrapper(res)), mimetype='text/event-stream')
+                    
+                    return res
+                
+                # If the result of execution is a generator, handle it
+                if is_sse and inspect.isgenerator(exec_result):
+                    return Response(stream_with_context(sse_wrapper(exec_result)), mimetype='text/event-stream')
 
             # Build template context (all user variables + framework objects)
             template_vars = context.get_variables()
@@ -440,19 +485,31 @@ def create_route_handler(route, db, helpers: Dict[str, Any], app: Flask, project
             template_vars['csrf'] = forms.csrf_token
             template_vars['url_for'] = response.url_for
 
-            # Render template with layout wrapping
+            # Render template, optionally wrapping with base.stpl layout.
+            # skip_layout is True when the route was decorated with @no_layout,
+            # which is the correct approach for HTMX fragment routes that should
+            # return bare HTML snippets rather than full pages.
             if route.template:
                 base_template_path = os.path.join(project_path, 'base.stpl')
-                if os.path.exists(base_template_path):
-                    # Wrap template with layout
+                base_exists = os.path.exists(base_template_path)
+
+                if skip_layout or not base_exists:
+                    # Render the template exactly as written — no layout wrapper.
+                    html = render_template_string(route.template, **template_vars)
+                else:
+                    # Wrap template with layout inheritance.
                     wrapped_template = wrap_template_with_layout(route.template)
                     html = render_template_string(wrapped_template, **template_vars)
-                else:
-                    # No base.stpl - render as-is (backward compatibility)
-                    html = render_template_string(route.template, **template_vars)
+                
+                if is_sse:
+                    lines = html.split('\n')
+                    sse_data = "\n".join(f"data: {line}" for line in lines) + "\n\n"
+                    return Response(sse_data, mimetype='text/event-stream')
                 return html
             else:
                 # No template, just return empty response
+                if is_sse:
+                    return Response("", mimetype='text/event-stream')
                 return ''
 
         except Exception as e:
@@ -511,8 +568,6 @@ def apply_decorators(handler, decorator_names: List[str], helpers: Dict[str, Any
             handler = decorator(handler)
 
     return handler
-
-
 
 
 def setup_jinja_globals(app: Flask):

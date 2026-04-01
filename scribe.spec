@@ -48,6 +48,7 @@ a = Analysis(
         'waitress',
         'psycopg2',
         'pymssql',
+        'ldap3',
     ],
     hookspath=[],
     hooksconfig={},

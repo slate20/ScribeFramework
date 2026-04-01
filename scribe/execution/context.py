@@ -5,6 +5,7 @@ This module provides a controlled environment for executing Python code
 from template files, with access to database, session, request, and helpers.
 """
 
+import textwrap
 import types
 import inspect
 from typing import Dict, Any, Optional
@@ -13,17 +14,15 @@ from scribe.execution.builtins import get_safe_builtins
 
 class ExecutionContext:
     """
-    Sandboxed execution environment for template Python code.
+    Execution environment for template Python code.
 
-    Provides controlled access to:
+    Provides access to:
         - Database operations (db)
         - Session management (session)
         - Request data (request)
         - Flask g object (g)
         - Helper functions from lib/
-        - Safe built-in functions
-
-    Blocks dangerous operations like file I/O and system calls.
+        - Full Python builtins including import
     """
 
     def __init__(
@@ -64,7 +63,7 @@ class ExecutionContext:
         Build the global namespace for code execution.
 
         Includes:
-            - Safe builtins
+            - Full Python builtins (including import)
             - Database adapter (db)
             - Session (session)
             - Request (request)
@@ -72,7 +71,7 @@ class ExecutionContext:
             - Helper functions
             - Route parameters
         """
-        # Start with safe builtins
+        # Start with full builtins
         self.namespace = get_safe_builtins()
 
         # Add framework objects
@@ -87,15 +86,29 @@ class ExecutionContext:
         # Add route parameters (e.g., post_id from /posts/<int:post_id>)
         self.namespace.update(self.route_params)
 
-        # Add common imports that are safe
-        self._add_safe_imports()
+        # Pre-import commonly used standard library modules for convenience
+        self._add_common_imports()
 
-    def _add_safe_imports(self):
-        """Add commonly used safe modules to namespace."""
-        # We can add safe modules here if needed
-        # For now, templates can import them explicitly in code blocks
+        self.current_template: Optional[str] = None
 
-        # Example of pre-importing safe modules:
+    def render(self, template: str, extra_vars: Optional[Dict[str, Any]] = None) -> str:
+        """Render a template string using the current context variables."""
+        from flask import render_template_string
+        
+        # Build template context (all user variables + framework objects)
+        variables = self.get_variables()
+        if extra_vars:
+            variables.update(extra_vars)
+            
+        # Add framework objects
+        variables['session'] = self.session
+        variables['request'] = self.request
+        variables['g'] = self.g
+        
+        return render_template_string(template, **variables)
+
+    def _add_common_imports(self):
+        """Pre-import commonly used modules into the namespace for convenience."""
         import datetime
         import json
         import re
@@ -108,101 +121,134 @@ class ExecutionContext:
 
     def execute(self, code: str) -> Any:
         """
-        Execute Python code in the sandboxed environment.
+        Execute Python code in the template environment.
+
+        ## How this works
+
+        User code is wrapped in a function so that `return` statements are
+        syntactically valid (bare `return` is illegal outside a function in
+        Python). However, wrapping code in a function introduces a scoping
+        problem: any variable the user assigns (e.g. `message = "hello"`)
+        becomes a *local* variable of the wrapper function and disappears
+        when the function returns — never making it into self.namespace where
+        get_variables() can find it for template rendering.
+
+        ### The fix: __locals__ capture dict
+
+        Before calling the wrapper, we inject a dict `__locals__` into the
+        namespace. The wrapper function calls `__locals__.update(locals())`
+        in two places:
+
+          1. Immediately before every `return` statement, so variables
+             assigned before an early return are still captured.
+          2. At the very end of the function body, for the normal (no-return)
+             case.
+
+        After the function returns, we merge `__locals__` back into
+        self.namespace, making all user-assigned variables available to
+        get_variables() and therefore to the Jinja2 template.
+
+        ### Safe return transformation
+
+        We do a minimal, safe transformation of `return` lines: a line is
+        only transformed if its *stripped* form starts with the keyword
+        `return` as a whole word. This means `return` appearing mid-line
+        (e.g. inside a string like `"please return your books"`) is never
+        touched, because it won't appear at the start of a stripped line.
 
         Args:
             code: Python code to execute
 
         Returns:
-            Return value from the code (if any), or None
+            The value passed to `return` in the code, or None
 
         Raises:
-            Any exceptions raised by the code
-
-        Example:
-            context = ExecutionContext(db=db, session=session, request=request)
-            context.execute('''
-            user_id = session.get('user_id')
-            user = db.find('users', user_id)
-            ''')
-            user = context.get_variable('user')
+            ExecutionError: wraps any exception raised by the user code
         """
         try:
-            # Check if code contains return statements
-            import re
-            has_return = bool(re.search(r'\breturn\b', code))
+            # Inject the locals capture dict into the namespace so the
+            # wrapper function can write into it.
+            local_capture: Dict[str, Any] = {}
+            self.namespace['__locals__'] = local_capture
 
-            if has_return:
-                # Define custom exception class for handling returns
-                # Execute this in the namespace so it's available
-                setup_code = '''
-class __ScribeReturn__(Exception):
-    """Internal exception for handling return statements"""
-    def __init__(self, value):
-        self.value = value
-        super().__init__()
-'''
-                exec(setup_code, self.namespace, self.namespace)
+            # Inject frame() helper
+            def frame(template=None, event=None, **kwargs):
+                """
+                Renders the current route's template using the caller's local variables.
+                """
+                target_template = template or self.current_template
+                if not target_template:
+                    return ""
+                
+                # Capture caller's locals
+                import inspect
+                f = inspect.currentframe().f_back
+                caller_vars = f.f_locals.copy()
+                caller_vars.update(kwargs)
+                
+                html = self.render(target_template, extra_vars=caller_vars)
+                if event:
+                    # Fix: handle multiline HTML for SSE
+                    data_lines = [f"data: {line}" for line in html.split('\n')]
+                    return f"event: {event}\n" + "\n".join(data_lines) + "\n\n"
+                return html
+            
+            self.namespace['frame'] = frame
 
-                # Transform return statements to raise exception instead
-                # Replace "return xyz" with "raise __ScribeReturn__(xyz)"
-                transformed_code = re.sub(
-                    r'\breturn\s+(.+)$',
-                    r'raise __ScribeReturn__(\1)',
-                    code,
-                    flags=re.MULTILINE
-                )
+            # Safe line-by-line return transformation.
+            # We only touch a line if its stripped content starts with the
+            # `return` keyword — this never fires for `return` mid-line
+            # (inside strings or comments) because those don't start a line
+            # with `return` after stripping leading whitespace.
+            processed_lines = []
+            for line in code.split('\n'):
+                stripped = line.lstrip()
+                line_indent = line[:len(line) - len(stripped)]
+                if (stripped == 'return'
+                        or stripped.startswith('return ')
+                        or stripped.startswith('return\t')):
+                    # Capture all locals before this return so that variables
+                    # assigned before an early exit are available to templates.
+                    processed_lines.append(
+                        f"{line_indent}__locals__.update(locals())"
+                    )
+                    processed_lines.append(line)
+                else:
+                    processed_lines.append(line)
 
-                # Also handle bare "return" statements
-                transformed_code = re.sub(
-                    r'\breturn\s*$',
-                    r'raise __ScribeReturn__(None)',
-                    transformed_code,
-                    flags=re.MULTILINE
-                )
+            # Indent the processed body by 4 spaces (one level inside the
+            # wrapper function), then append the end-of-function capture line
+            # at the same indentation level.
+            indented_body = textwrap.indent('\n'.join(processed_lines), '    ')
+            wrapper_src = (
+                f"def __scribe_route_handler__():\n"
+                f"{indented_body}\n"
+                f"    __locals__.update(locals())\n"
+            )
 
-                # Wrap in try/except to catch the return exception
-                wrapped_code = f'''
-try:
-{self._indent_code(transformed_code, 4)}
-    __scribe_return__ = None
-except __ScribeReturn__ as __e__:
-    __scribe_return__ = __e__.value
-'''
-                # Execute directly in the namespace (no function wrapper)
-                exec(wrapped_code, self.namespace, self.namespace)
-            else:
-                # No return statements, execute directly
-                exec(code, self.namespace, self.namespace)
+            # Execute the function definition in the shared namespace so that
+            # the function body can access db, session, request, etc. as globals.
+            exec(wrapper_src, self.namespace)  # noqa: S102
 
-            # Check if there's a return value
-            return_value = self.namespace.get('__scribe_return__')
+            # Call the wrapper and capture any explicit return value.
+            result = self.namespace['__scribe_route_handler__']()
 
-            # Store in __return__ for backward compatibility
-            if return_value is not None:
-                self.namespace['__return__'] = return_value
+            # Merge user-assigned variables back into the shared namespace so
+            # that get_variables() can find them for template rendering.
+            for k, v in local_capture.items():
+                if not k.startswith('_'):
+                    self.namespace[k] = v
 
-            return return_value
+            # Store an explicit return value (redirect, jsonify, abort, etc.)
+            # under the sentinel key so has_return_value() / get_variable()
+            # can retrieve it in create_route_handler.
+            if result is not None:
+                self.namespace['__return__'] = result
+
+            return result
 
         except Exception as e:
-            # Re-raise exceptions with better context
             raise ExecutionError(f"Error executing template code: {e}") from e
-
-    def _indent_code(self, code: str, spaces: int = 4) -> str:
-        """
-        Indent code by specified number of spaces for wrapping in a function.
-
-        Args:
-            code: Code to indent
-            spaces: Number of spaces to indent (default: 4)
-
-        Returns:
-            Indented code
-        """
-        indent = ' ' * spaces
-        lines = code.split('\n')
-        indented_lines = [indent + line if line.strip() else line for line in lines]
-        return '\n'.join(indented_lines)
 
     def get_variable(self, name: str, default: Any = None) -> Any:
         """
@@ -219,37 +265,41 @@ except __ScribeReturn__ as __e__:
 
     def get_variables(self) -> Dict[str, Any]:
         """
-        Get all variables from the namespace for template rendering.
+        Get all user-defined variables from the namespace for template rendering.
+
+        Excludes builtins, framework objects, modules, and private names.
 
         Returns:
             Dict of variable name -> value
-
-        This returns user-defined variables (excluding builtins and framework objects)
         """
-        # Get safe builtins to exclude them
-        safe_builtins = get_safe_builtins()
+        # Names injected by the framework that should never appear in templates
+        framework_names = {
+            'db', 'session', 'request', 'g',
+            '__scribe_route_handler__',
+            '__locals__',
+        }
 
-        # Filter out builtins, framework objects, and modules
         user_vars = {}
         for key, value in self.namespace.items():
-            # Skip builtins
-            if key in safe_builtins:
+            # Skip private / dunder names
+            if key.startswith('_'):
                 continue
 
-            # Skip framework objects
-            if key in ('db', 'session', 'request', 'g'):
+            # Skip framework-injected names
+            if key in framework_names:
                 continue
 
-            # Skip modules, functions, and classes (but NOT instances)
+            # Skip modules
             if isinstance(value, types.ModuleType):
                 continue
-            if isinstance(value, types.FunctionType):
-                continue
-            if inspect.isclass(value):
+
+            # Skip built-in callables (functions and classes whose module is
+            # 'builtins'). This excludes Python's built-ins while keeping any
+            # functions the developer defined in their template code.
+            if callable(value) and getattr(value, '__module__', None) == 'builtins':
                 continue
 
-            # Skip private variables
-            if key.startswith('_'):
+            if inspect.isclass(value) and value.__module__ == 'builtins':
                 continue
 
             user_vars[key] = value
@@ -268,10 +318,11 @@ except __ScribeReturn__ as __e__:
 
     def has_return_value(self) -> bool:
         """
-        Check if the executed code has a return value.
+        Check if the executed code produced a return value
+        (e.g. redirect, jsonify, abort).
 
         Returns:
-            True if code returned a value (redirect, jsonify, abort, etc.)
+            True if code returned a non-None value
         """
         return '__return__' in self.namespace
 

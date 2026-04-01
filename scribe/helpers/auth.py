@@ -2,7 +2,7 @@
 Authentication helper functions and decorators for ScribeEngine.
 
 Provides:
-- @require_auth decorator
+- @require_auth decorator (configurable via scribe.json or per-route arguments)
 - Login/logout helpers
 - Password hashing utilities
 """
@@ -12,43 +12,104 @@ from flask import session, redirect, request
 from werkzeug.security import generate_password_hash, check_password_hash
 
 
-def require_auth(f=None, login_url='/login'):
+def require_auth(f=None, login_url=None, session_key=None):
     """
     Decorator to require authentication for a route.
 
-    Args:
-        f: Function to decorate (optional, for parameterless @require_auth)
-        login_url: URL to redirect to if not authenticated
+    Resolution order for login_url and session_key:
+        1. Explicit keyword argument on the decorator
+        2. scribe.json  ->  auth.login_url / auth.session_key
+        3. Built-in defaults  ('/login' and 'user_id')
 
-    Usage in template:
+    Args:
+        f: The view function (set automatically when used as @require_auth
+           with no parentheses).
+        login_url: URL to redirect unauthenticated users to.
+        session_key: Session key that must be present for a user to be
+                     considered authenticated.
+
+    Usage in templates:
+
+        # Most common — zero config, uses defaults or scribe.json values:
         @route('/dashboard')
         @require_auth
         {$ ... $}
 
-        or with custom login URL:
-
+        # Override per-route:
         @route('/admin')
-        @require_auth('/admin/login')
+        @require_auth(session_key='admin_id', login_url='/admin/login')
         {$ ... $}
+
+    scribe.json example:
+        {
+          "auth": {
+            "session_key": "uid",
+            "login_url": "/sign-in"
+          }
+        }
     """
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
-            if 'user_id' not in session:
-                # Store the requested URL to redirect back after login
+            from flask import current_app
+
+            # Resolve configuration, preferring explicit args over app config
+            # over hard-coded defaults.
+            auth_cfg = current_app.config.get('AUTH', {})
+
+            resolved_key = (
+                session_key
+                or auth_cfg.get('session_key', 'user_id')
+            )
+            resolved_url = (
+                login_url
+                or auth_cfg.get('login_url', '/login')
+            )
+
+            if resolved_key not in session:
+                # Remember where the user was trying to go so we can redirect
+                # back after a successful login.
                 session['next_url'] = request.url
-                return redirect(login_url)
+                return redirect(resolved_url)
+
             return func(*args, **kwargs)
         return wrapper
 
-    # Handle both @require_auth and @require_auth('/custom_url')
-    if f is None:
-        # Called with arguments: @require_auth('/custom_url')
-        return decorator
-    else:
-        # Called without arguments: @require_auth
+    # Support both @require_auth (no parentheses) and
+    # @require_auth(...) (with arguments).
+    if f is not None:
+        # Called as @require_auth with no parentheses — f is the view function.
         return decorator(f)
 
+    # Called as @require_auth(...) — return the decorator for the next call.
+    return decorator
+
+
+# ---------------------------------------------------------------------------
+# App factory helper — call this inside create_app() after loading config
+# ---------------------------------------------------------------------------
+
+def configure_auth(app, config: dict):
+    """
+    Store auth configuration on the Flask app so require_auth can read it.
+
+    Call this from create_app() after loading scribe.json:
+
+        configure_auth(app, app_config.get('auth', {}))
+
+    Args:
+        app: Flask application instance
+        config: The 'auth' sub-dict from scribe.json (may be empty)
+    """
+    app.config['AUTH'] = {
+        'session_key': config.get('session_key', 'user_id'),
+        'login_url':   config.get('login_url',   '/login'),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Password helpers
+# ---------------------------------------------------------------------------
 
 def hash_password(password: str) -> str:
     """
@@ -64,31 +125,31 @@ def hash_password(password: str) -> str:
         {$
         password = request.form.get('password')
         hashed = hash_password(password)
-        db.insert('users', username=username, password=hashed)
+        db['default'].insert('users', username=username, password=hashed)
         $}
     """
     return generate_password_hash(password, method='scrypt')
 
 
-def verify_password(password: str, password_hash: str) -> bool:
+def verify_password(password_hash: str, password: str) -> bool:
     """
     Verify a password against its hash.
 
     Args:
-        password: Plain text password
         password_hash: Hashed password from database
+        password: Plain text password to check
 
     Returns:
         True if password matches
 
     Example in template:
         {$
-        user = db.table('users').where(username=username).first()
-        if user and verify_password(password, user['password']):
-            session['user_id'] = user['id']
+        user = db['default'].query(
+            "SELECT * FROM users WHERE username = ?", (username,)
+        )
+        if user and verify_password(user[0]['password_hash'], password):
+            session['user_id'] = user[0]['id']
             return redirect('/dashboard')
-        else:
-            errors['login'] = "Invalid username or password"
         $}
     """
     return check_password_hash(password_hash, password)
@@ -101,14 +162,6 @@ def login_user(user_id: int, remember: bool = False):
     Args:
         user_id: User ID to store in session
         remember: If True, make session permanent (30 days)
-
-    Example in template:
-        {$
-        user = db.table('users').where(username=username).first()
-        if user and verify_password(password, user['password']):
-            login_user(user['id'], remember=True)
-            return redirect('/dashboard')
-        $}
     """
     session['user_id'] = user_id
 
@@ -137,13 +190,6 @@ def get_current_user_id():
 
     Returns:
         User ID or None if not logged in
-
-    Example in template:
-        {$
-        user_id = get_current_user_id()
-        if user_id:
-            user = db.find('users', user_id)
-        $}
     """
     return session.get('user_id')
 
@@ -154,39 +200,28 @@ def is_authenticated() -> bool:
 
     Returns:
         True if user is logged in
-
-    Example in template:
-        {$
-        if is_authenticated():
-            user = db.find('users', session['user_id'])
-        $}
     """
     return 'user_id' in session
 
 
+# ---------------------------------------------------------------------------
+# AuthHelper class
+# ---------------------------------------------------------------------------
+
 class AuthHelper:
     """
     Authentication helper class that can be injected into templates.
-
-    Provides convenient methods for authentication operations.
 
     Example usage in template:
         {$
         if auth.login(username, password):
             return redirect('/dashboard')
         else:
-            errors['login'] = "Invalid credentials"
+            error = "Invalid credentials"
         $}
     """
 
     def __init__(self, db, session):
-        """
-        Initialize auth helper.
-
-        Args:
-            db: DatabaseAdapter instance
-            session: Flask session object
-        """
         self.db = db
         self.session = session
 
@@ -201,21 +236,7 @@ class AuthHelper:
 
         Returns:
             True if login successful
-
-        Example:
-            {$
-            if request.method == 'POST':
-                username = request.form.get('username')
-                password = request.form.get('password')
-
-                if auth.login(username, password):
-                    flash('Login successful!', 'success')
-                    return redirect('/dashboard')
-                else:
-                    errors['login'] = "Invalid username or password"
-            $}
         """
-        # Find user by username
         users = self.db.where('users', **{username_field: username})
 
         if not users:
@@ -223,28 +244,22 @@ class AuthHelper:
 
         user = users[0]
 
-        # Verify password
-        if verify_password(password, user['password']):
+        if verify_password(user['password_hash'], password):
             login_user(user['id'])
             return True
 
         return False
 
     def logout(self):
-        """
-        Log out the current user.
-
-        Example:
-            {$ auth.logout() $}
-        """
+        """Log out the current user."""
         logout_user()
 
     def user_id(self):
-        """Get current user ID or None"""
+        """Get current user ID or None."""
         return get_current_user_id()
 
     def is_authenticated(self) -> bool:
-        """Check if user is logged in"""
+        """Check if user is logged in."""
         return is_authenticated()
 
     def get_user(self):

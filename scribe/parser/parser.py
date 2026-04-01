@@ -77,6 +77,7 @@ class TemplateParser:
 
         Route structure:
             @route('/path', methods=['GET', 'POST'])
+            @no_layout
             @decorator1
             @decorator2
             {$
@@ -116,6 +117,15 @@ class TemplateParser:
             decorator_name = self._parse_decorator(self.current_token.value)
             route.decorators.append(decorator_name)
             self._advance()
+
+        if 'no_layout' in route.decorators:
+            route.no_layout = True
+            route.decorators.remove('no_layout')
+
+        if 'sse' in route.decorators:
+            route.is_sse = True
+            route.no_layout = True
+            route.decorators.remove('sse')
 
         # Parse Python block (optional)
         if self.current_token and self.current_token.type == TokenType.PYTHON_BLOCK_START:

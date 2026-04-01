@@ -39,6 +39,9 @@ class Route:
     - Optional decorators (@require_auth, @rate_limit, etc.)
     - Python code block to execute
     - HTML/Jinja2 template to render
+
+    Flags:
+    - no_layout: When True, the template is rendered as-is without being wrapped in base.stpl.
     """
     path: str
     methods: List[str] = field(default_factory=lambda: ['GET'])
@@ -47,6 +50,8 @@ class Route:
     template: Optional[str] = None
     line_number: int = 0
     source_file: Optional[str] = None
+    no_layout: bool = False
+    is_sse: bool = False
 
     # Extracted from path pattern
     path_parameters: List[str] = field(default_factory=list)
@@ -62,6 +67,7 @@ class Route:
     def __str__(self):
         methods_str = ','.join(self.methods)
         decorators_str = f" [{', '.join(self.decorators)}]" if self.decorators else ""
+        layout_str = " [no_layout]" if self.no_layout else ""
         return f"Route({self.path} [{methods_str}]{decorators_str})"
 
     def get_function_name(self):

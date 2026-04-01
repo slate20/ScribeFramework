@@ -7,6 +7,7 @@ Waitress
 
 # Security
 Flask-WTF>=1.2.0,<2.0.0
+ldap3
 
 # Database Support
 # SQLite is built into Python

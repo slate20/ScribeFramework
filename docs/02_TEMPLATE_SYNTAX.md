@@ -116,6 +116,51 @@ Require login:
 
 Redirects to `/login` if not authenticated.
 
+### @no_layout
+
+Disable the automatic `base.stpl` wrapper. Useful for HTMX fragments or AJAX responses.
+
+```python
+@route('/api/fragment')
+@no_layout
+{$ ... $}
+<div>I am a bare HTML snippet</div>
+```
+
+### @sse
+
+Enable Server-Sent Events (SSE). This decorator:
+1. Sets the response mimetype to `text/event-stream`.
+2. Automatically applies `@no_layout`.
+3. Supports `yield` for streaming updates.
+
+```python
+@route('/counter')
+@sse
+{$
+import time
+for i in range(5):
+    count = i
+    yield frame() # Renders the template below
+    time.sleep(1)
+$}
+<div class="update">Current count: {{ count }}</div>
+```
+
+## Built-in Helpers
+
+### frame(template=None, event=None, **kwargs)
+
+Used within `@sse` routes to render fragments for the stream.
+
+- **template**: Optional override for the template to render. Defaults to the route's own template.
+- **event**: Optional SSE event name (e.g., `event: update`).
+- **kwargs**: Extra variables to pass to the template.
+
+```python
+yield frame(event='notification', msg='New Alert!')
+```
+
 ## Return Statements
 
 ### Redirect
