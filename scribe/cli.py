@@ -1,5 +1,5 @@
 """
-Command-line interface for ScribeEngine.
+Command-line interface for ScribeFramework.
 
 Provides commands:
     scribe new <project>    - Create new project
@@ -19,9 +19,9 @@ def create_docs(project_path, project_name):
     os.makedirs(docs_path, exist_ok=True)
 
     # docs/README.md
-    docs_readme = f'''# ScribeEngine Documentation
+    docs_readme = f'''# ScribeFramework Documentation
 
-Welcome to your {project_name} documentation! These guides will help you get the most out of ScribeEngine.
+Welcome to your {project_name} documentation! These guides will help you get the most out of ScribeFramework.
 
 ## 📚 Guides
 
@@ -29,24 +29,25 @@ Welcome to your {project_name} documentation! These guides will help you get the
 2. **[Template Syntax](02_TEMPLATE_SYNTAX.md)** - Complete reference for .stpl files
 3. **[Database](03_DATABASE.md)** - Working with databases, queries, and migrations
 4. **[Authentication](04_AUTHENTICATION.md)** - Understanding and customizing the auth system
-5. **[Deployment](05_DEPLOYMENT.md)** - Deploying your app to production
+5. **[HTMX & SSE](05_INTERACTIVITY.md)** - Build modern, interactive apps without Javascript
+6. **[Deployment](06_DEPLOYMENT.md)** - Deploying your app to production
 
 ## 🚀 Recommended Reading Order
 
-**New to ScribeEngine?**
+**New to ScribeFramework?**
 1. Start with Getting Started
 2. Read Template Syntax
 3. Explore Database guide
-4. Dive into Authentication (if using auth)
+4. Dive into Interactivity (HTMX & SSE)
+5. Learn about Authentication (if using auth)
 
 **Ready for production?**
 - Jump to Deployment guide
 
 ## 🔗 More Resources
 
-- **Full Documentation:** See the `new-architecture/` directory for complete technical specs
-- **Examples:** Check out the `/login`, `/dashboard` routes in your `app.stpl`
-- **Community:** [GitHub Issues](https://github.com/yourusername/scribe-engine/issues)
+- **Examples:** Check out the interactive demos and auth routes in your `app.stpl`
+- **Community:** [GitHub Issues](https://github.com/yourusername/scribe-framework/issues)
 
 ## 💡 Quick Reference
 
@@ -59,18 +60,20 @@ $}
 <h1>'''+'''{{ message }}</h1>
 ```
 
-**Query database:**
+**SSE Route:**
 ```python
-{$
-users = db['default'].query("SELECT * FROM users")
+@route('/stream')
+@sse
+'''+'''{$
+yield frame(event="message")
 $}
 ```
 
-**Protect a route:**
+**HTMX Fragment:**
 ```python
-@route('/admin')
-@require_auth
-{$
+@route('/partial')
+@no_layout
+'''+'''{$
 ... $}
 ```
 
@@ -82,9 +85,9 @@ Happy coding! 🎉
         f.write(docs_readme)
 
     # docs/01_GETTING_STARTED.md
-    getting_started = '''# Getting Started with ScribeEngine
+    getting_started = '''# Getting Started with ScribeFramework
 
-This guide will walk you through creating your first custom route and understanding how ScribeEngine works.
+This guide will walk you through creating your first custom route and understanding how ScribeFramework works.
 
 ## Your Project Structure
 
@@ -314,7 +317,7 @@ Happy coding! 🚀
     # docs/02_TEMPLATE_SYNTAX.md
     template_syntax = '''# Template Syntax Reference
 
-Complete guide to ScribeEngine `.stpl` file syntax.
+Complete guide to ScribeFramework `.stpl` file syntax.
 
 ## Route Declaration
 
@@ -483,7 +486,7 @@ See [Getting Started](01_GETTING_STARTED.md) for examples.
     # docs/03_DATABASE.md
     database_guide = '''# Database Guide
 
-Learn how to work with databases in ScribeEngine.
+Learn how to work with databases in ScribeFramework.
 
 ## Configuration
 
@@ -673,7 +676,7 @@ $}
 
 ### 2. Session is stored
 
-ScribeEngine uses Flask sessions (signed cookies by default).
+ScribeFramework uses Flask sessions (signed cookies by default).
 
 ### 3. Protected routes check session
 
@@ -776,10 +779,77 @@ See [Getting Started](01_GETTING_STARTED.md) for more examples.
     with open(os.path.join(docs_path, '04_AUTHENTICATION.md'), 'w') as f:
         f.write(auth_guide)
 
-    # docs/05_DEPLOYMENT.md
+    # docs/05_INTERACTIVITY.md
+    interactivity_guide = '''# Interactive Apps (HTMX & SSE)
+
+ScribeFramework includes built-in support for building modern, interactive web applications without writing custom JavaScript.
+
+## ⚡ HTMX Integration
+
+HTMX allows you to perform AJAX requests using HTML attributes.
+
+### Using @no_layout
+
+Use the `@no_layout` decorator for routes that should only return a fragment of HTML (ideal for HTMX).
+
+```python
+@route('/time')
+@no_layout
+'''+'''{$
+import datetime
+current_time = datetime.datetime.now().strftime("%H:%M:%S")
+$}
+<p>The time is <strong>{{ current_time }}</strong></p>
+```
+
+In your main template:
+```html
+<div id="time-display">Wait for it...</div>
+<button class="btn btn-primary" hx-get="/time" hx-target="#time-display">Update Time</button>
+```
+
+## 📡 Server-Sent Events (SSE)
+
+SSE allows the server to push updates to the client in real-time.
+
+### Using @sse
+
+Decorate a route with `@sse` to enable event-stream responses.
+
+```python
+@route('/counter')
+@sse
+'''+'''{$
+import time
+def count():
+    for i in range(1, 11):
+        yield frame(template="Count: {{ i }}", i=i, event="message")
+        time.sleep(1)
+return count()
+$}
+```
+
+### HTMX SSE Extension
+
+Your project includes the HTMX SSE extension. Use it like this:
+
+```html
+<div hx-ext="sse" sse-connect="/counter" sse-swap="message">
+    Waiting for updates...
+</div>
+```
+
+Every "message" event from the server will replace the contents of this div.
+'''
+
+    # Write docs/05_INTERACTIVITY.md
+    with open(os.path.join(docs_path, '05_INTERACTIVITY.md'), 'w') as f:
+        f.write(interactivity_guide)
+
+    # docs/06_DEPLOYMENT.md
     deployment_guide = '''# Deployment Guide
 
-Deploy your ScribeEngine app to production.
+Deploy your ScribeFramework app to production.
 
 ## Production Checklist
 
@@ -795,7 +865,7 @@ Before deploying:
 
 ## Using Production Server
 
-ScribeEngine includes Waitress (production WSGI server):
+ScribeFramework includes Waitress (production WSGI server):
 
 ```bash
 scribe serve --host 0.0.0.0 --port 8000 --threads 8
@@ -849,7 +919,7 @@ Create `/etc/systemd/system/myapp.service`:
 
 ```ini
 [Unit]
-Description=MyApp ScribeEngine
+Description=MyApp ScribeFramework
 After=network.target
 
 [Service]
@@ -872,15 +942,15 @@ sudo systemctl start myapp
 See other guides for development workflows.
 '''
 
-    # Write docs/05_DEPLOYMENT.md
-    with open(os.path.join(docs_path, '05_DEPLOYMENT.md'), 'w') as f:
+    # Write docs/06_DEPLOYMENT.md
+    with open(os.path.join(docs_path, '06_DEPLOYMENT.md'), 'w') as f:
         f.write(deployment_guide)
 
 
 @click.group()
 @click.version_option(version="2.0.0-alpha")
 def cli():
-    """ScribeEngine - Write Python directly in templates"""
+    """ScribeFramework - Write Python directly in templates"""
     pass
 
 
@@ -889,7 +959,7 @@ def cli():
 @click.option('--path', default='.', help='Parent directory for new project')
 def new(project_name, path):
     """
-    Create a new ScribeEngine project.
+    Create a new ScribeFramework project.
 
     Example:
         scribe new myapp
@@ -902,7 +972,7 @@ def new(project_name, path):
         click.echo(f"Error: Directory '{project_path}' already exists")
         return
 
-    click.echo(f"Creating new ScribeEngine project: {project_name}")
+    click.echo(f"Creating new ScribeFramework project: {project_name}")
 
     # Create directory structure
     os.makedirs(project_path)
@@ -932,12 +1002,18 @@ def new(project_name, path):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ page_title | default('My App') }} - ScribeEngine</title>
-    <meta name="description" content="{{ page_description | default('Built with ScribeEngine') }}">
+    <title>{{ page_title | default('My App') }} - ScribeFramework</title>
+    <meta name="description" content="{{ page_description | default('Built with ScribeFramework') }}">
     <link rel="stylesheet" href="/static/css/style.css">
+    
+    <!-- HTMX Core -->
+    <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js"></script>
+    <!-- HTMX SSE Extension -->
+    <script src="https://unpkg.com/htmx-ext-sse@2.2.4/sse.js"></script>
+
     {'''+ '''% block extra_head %}{'''+ '''% endblock %}
 </head>
-<body>
+<body hx-headers='{"X-CSRFToken": "{{ csrf_token() }}"}'>
     <header class="navbar">
         <div class="container">
             <div class="navbar-content">
@@ -982,7 +1058,7 @@ def new(project_name, path):
 
     <footer class="footer">
         <div class="container">
-            <p>&copy; 2025 My ScribeEngine App. Built with <a href="https://github.com/yourusername/scribe-engine">ScribeEngine</a>.</p>
+            <p>&copy; 2025 My ScribeFramework App. Built with <a href="https://github.com/yourusername/scribe-framework">ScribeFramework</a>.</p>
         </div>
     </footer>
 
@@ -1004,9 +1080,9 @@ $}
 
 <div class="hero">
     <div class="container">
-        <h1>Welcome to Your ScribeEngine App! 🚀</h1>
-        <p class="lead">You're all set up with authentication, database access, and a modern UI.
-           Try logging in or start building your first feature.</p>
+        <h1>Welcome to Your ScribeFramework App! 🚀</h1>
+        <p class="lead">You're all set up with authentication, database access, and interactive features like HTMX and SSE.
+           Try the demos below or start building your first feature.</p>
         <div class="hero-buttons">
             <a href="/login" class="btn btn-primary">Try Login Demo</a>
             <a href="/about" class="btn btn-secondary">Learn More</a>
@@ -1014,65 +1090,123 @@ $}
     </div>
 </div>
 
-<div class="container-narrow">
-    <div class="card">
-        <h2>🎯 Quick Start</h2>
-        <ul class="checklist">
-            <li><strong>Try it out:</strong> Login with <code>testuser</code> / <code>password123</code></li>
-            <li><strong>Customize theme:</strong> Edit CSS variables in <code>static/css/style.css</code></li>
-            <li><strong>Add routes:</strong> Open <code>app.stpl</code> and create your first route</li>
-            <li><strong>Read docs:</strong> Check out the guides in <code>docs/</code> directory</li>
-            <li><strong>Don't need auth?</strong> See README.md for removal instructions</li>
-        </ul>
-    </div>
+<div class="container">
+    <div class="concept-grid">
+        <!-- HTMX Demo -->
+        <div class="card">
+            <h2>HTMX Dynamic Content</h2>
+            <p>Load content from the server without a full page refresh using <code>@no_layout</code>.</p>
+            <div id="time-display" class="info-box">
+                The time will appear here...
+            </div>
+            <button class="btn btn-primary" 
+                    hx-get="/demo/time" 
+                    hx-target="#time-display"
+                    hx-swap="innerHTML">
+                Update Time
+            </button>
+        </div>
 
-    <div class="card">
-        <h2>📚 Key Concepts</h2>
-        <p>ScribeEngine makes web development simple. Here are the core concepts:</p>
-        <ul>
-            <li><strong>Routes:</strong> Define URL endpoints with <code>&#64;route('/path')</code> decorators</li>
-            <li><strong>Python Blocks:</strong> Write server-side code in <code>&lcub;$ ... $&rcub;</code> blocks</li>
-            <li><strong>Templates:</strong> Use Jinja2 syntax <code>&lcub;&lcub; variable &rcub;&rcub;</code> to display data</li>
-            <li><strong>Database:</strong> Query any database with <code>db['default'].query()</code></li>
-            <li><strong>Authentication:</strong> Protect routes with <code>&#64;require_auth</code> decorator</li>
-            <li><strong>Forms:</strong> Automatic CSRF protection with <code>&lcub;&lcub; csrf() &rcub;&rcub;</code></li>
-        </ul>
-        <p>See the <code>docs/</code> directory for detailed examples and tutorials.</p>
-    </div>
+        <!-- SSE Demo -->
+        <div class="card">
+            <h2>Real-time SSE Stream</h2>
+            <p>Stream updates from the server in real-time using the <code>@sse</code> decorator.</p>
+            <div hx-ext="sse" sse-connect="/demo/counter" sse-swap="message" class="info-box text-center">
+                <div class="sse-counter">Waiting for stream...</div>
+            </div>
+            <p class="text-muted small">The counter above is updated every second via a server-side generator.</p>
+        </div>
 
-    <div class="card">
-        <h2>🎁 What's Included</h2>
-        <ul>
-            <li><strong>Authentication:</strong> Login, logout, session management, protected routes</li>
-            <li><strong>Database:</strong> SQLite ready to go (easy to upgrade to PostgreSQL/MySQL)</li>
-            <li><strong>Modern UI:</strong> Responsive design with CSS variable theming</li>
-            <li><strong>Security:</strong> CSRF tokens, password hashing, secure sessions</li>
-            <li><strong>Documentation:</strong> Complete guides in the <code>docs/</code> folder</li>
-        </ul>
-    </div>
-
-    <div class="card">
-        <h2>🚀 Next Steps</h2>
-        <ol>
-            <li><a href="/login">Try the login demo</a> to see authentication in action</li>
-            <li>Read <code>docs/01_GETTING_STARTED.md</code> for a tutorial</li>
-            <li>Customize the theme by changing CSS variables</li>
-            <li>Add your first custom route</li>
-            <li>Build something amazing!</li>
-        </ol>
+        <!-- HTMX Form Demo -->
+        <div class="card">
+            <h2>Live Search</h2>
+            <p>Experience zero-JS interactivity. Search our "database" as you type.</p>
+            <div class="form-group">
+                <input type="text" name="query" 
+                       placeholder="Search (e.g. Scribe, HTMX, Python)..."
+                       hx-post="/demo/search" 
+                       hx-trigger="keyup changed delay:200ms" 
+                       hx-target="#search-results"
+            </div>
+            <div id="search-results">
+                <p class="text-muted">Type something to see results...</p>
+            </div>
+        </div>
     </div>
 </div>
 
+<div class="container-narrow">
+    <div class="card">
+        <h2>Quick Start</h2>
+        <ul class="checklist">
+            <li><strong>Try it out:</strong> Login with <code>testuser</code> / <code>password123</code></li>
+            <li><strong>Interactive:</strong> Check out the HTMX and SSE demos above</li>
+            <li><strong>Customize theme:</strong> Edit CSS variables in <code>static/css/style.css</code></li>
+            <li><strong>Add routes:</strong> Open <code>app.stpl</code> and create your first route</li>
+            <li><strong>Read docs:</strong> Check out the guides in <code>docs/</code> directory</li>
+        </ul>
+    </div>
+</div>
 
-'''+'''# ================================================================
-# AUTHENTICATION ROUTES
-# To remove authentication:
-#   1. Delete everything between these markers
-#   2. Remove @require_auth decorators from your custom routes
-#   3. Delete lib/auth_helpers.py
-#   4. Delete migrations/001_users.sql
-#   5. Update navbar in base.stpl (remove session check)
-# ================================================================
+{#
+================================================================
+ INTERACTIVE DEMOS (HTMX + SSE)
+================================================================
+#}
+
+@route('/demo/time')
+@no_layout
+{$
+import datetime
+current_time = datetime.datetime.now().strftime("%H:%M:%S")
+$}
+<p>The current server time is <strong>{{ current_time }}</strong></p>
+
+@route('/demo/counter')
+@sse
+{$
+import time
+def count_to_hundred():
+    for i in range(1, 101):
+        # frame() renders a snippet. event="message" is the HTMX default.
+        yield frame(template="<div class='sse-counter'>Live Counter: <strong>{{ i }}</strong></div>", i=i, event="message")
+        time.sleep(1)
+return count_to_hundred()
+$}
+
+@route('/demo/search', methods=['POST'])
+@no_layout
+{$
+query = request.form.get('query', '').lower()
+items = ['ScribeFramework', 'Flask', 'Jinja2', 'HTMX', 'SSE', 'Python', 'SQLite', 'Tailwind', 'PostgreSQL']
+results = [item for item in items if query in item.lower()] if query else []
+$}
+<div class="search-results info-box">
+    {% if results %}
+        <ul style="margin: 0; padding-left: 1.2rem;">
+            {% for item in results %}
+                <li>{{ item }}</li>
+            {% endfor %}
+        </ul>
+    {% elif query %}
+        <p style="margin: 0;">No results found for "{{ query }}"</p>
+    {% else %}
+        <p style="margin: 0;" class="text-muted">Type to search...</p>
+    {% endif %}
+</div>
+
+
+'''+'''{#
+================================================================
+ AUTHENTICATION ROUTES
+ To remove authentication:
+   1. Delete everything between these markers
+   2. Remove @require_auth decorators from your custom routes
+   3. Delete lib/auth_helpers.py
+   4. Delete migrations/001_users.sql
+   5. Update navbar in base.stpl (remove session check)
+================================================================
+#}
 
 '''+'''@route('/login', methods=['GET', 'POST'])
 {$
@@ -1177,7 +1311,7 @@ $}
         </div>
 
         <div class="info-box">
-            <h3>🔐 About This Page</h3>
+            <h3>About This Page</h3>
             <p>This route is protected by the <code>@require_auth</code> decorator.
                Only logged-in users can see this page.</p>
             <p>Your session contains: <code>session['user_id'] = {'''+ '''{ session['user_id'] }}</code></p>
@@ -1210,28 +1344,31 @@ return redirect('/login')
 $}
 
 
-'''+'''# ================================================================
-# END AUTHENTICATION ROUTES
-# ================================================================
+'''+'''{#
+================================================================
+ END AUTHENTICATION ROUTES
+================================================================
+#}
 
 
 '''+'''@route('/about')
 {$
 page_title = "About"
-page_description = "Learn about this ScribeEngine application"
+page_description = "Learn about this ScribeFramework application"
 $}
 
 <div class="container-narrow">
     <div class="card">
         <h1>About This Project</h1>
 
-        <p>This is a ScribeEngine web application. ScribeEngine lets you write Python
+        <p>This is a ScribeFramework web application. ScribeFramework lets you write Python
            directly in templates, eliminating boilerplate and making web development fast.</p>
 
         <h2>Framework Features</h2>
         <ul>
             <li>Write Python in templates with <code>&lcub;$ ... $&rcub;</code> blocks</li>
             <li>Define routes using <code>&#64;route()</code> decorators</li>
+            <li><strong>NEW:</strong> Native HTMX and SSE support</li>
             <li>Built-in authentication and security</li>
             <li>Unified database API (SQLite, PostgreSQL, MySQL, MSSQL)</li>
             <li>Automatic CSRF protection</li>
@@ -1258,7 +1395,7 @@ $}
 
     # Create modern CSS file with CSS variables
     css = '''/* ================================================================
-   SCRIBEENGINE - DEFAULT THEME
+   SCRIBEFRAMEWORK - DEFAULT THEME
 
    CUSTOMIZE THIS:
    Change the CSS variables below to customize colors, spacing, etc.
@@ -1325,6 +1462,32 @@ $}
     /* Layout */
     --container-max-width: 1200px;
     --container-narrow-width: 600px;
+}
+
+/* SSE and HTMX Demo Styles */
+.sse-counter {
+    font-size: var(--font-size-xl);
+    font-weight: 700;
+    color: var(--primary-color);
+}
+
+.search-results {
+    min-height: 50px;
+}
+
+.search-results ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.search-results li {
+    padding: var(--spacing-sm) 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.search-results li:last-child {
+    border-bottom: none;
 }
 
 
@@ -1809,7 +1972,7 @@ INSERT INTO users (username, password_hash) VALUES
     # Create README
     readme = f'''# {project_name}
 
-A ScribeEngine web application with authentication, database, and modern UI.
+A ScribeFramework web application with authentication, database, and interactive features (HTMX + SSE).
 
 ## Quick Start
 
@@ -1823,12 +1986,20 @@ Then open http://localhost:5000
 - Username: `testuser`
 - Password: `password123`
 
+## Interactive Features
+
+This project comes pre-configured with:
+- **HTMX:** For dynamic content loading without page refreshes.
+- **SSE:** For real-time data streaming from the server.
+
+Check the homepage in `app.stpl` to see these in action!
+
 ## Project Structure
 
 ```
 {project_name}/
 ├── app.stpl              # Routes and templates
-├── base.stpl             # HTML layout
+├── base.stpl             # HTML layout (includes HTMX)
 ├── scribe.json           # Configuration
 ├── lib/                  # Helper functions
 │   └── auth_helpers.py   # Password utilities
@@ -1932,7 +2103,7 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# ScribeEngine
+# ScribeFramework
 scribe.json  # May contain secrets
 '''
     with open(os.path.join(project_path, '.gitignore'), 'w') as f:
@@ -1960,7 +2131,7 @@ scribe.json  # May contain secrets
 @click.option('--path', default='.', help='Project directory')
 def dev(host, port, debug, no_reload, path):
     """
-    Run development server for your ScribeEngine application.
+    Run development server for your ScribeFramework application.
 
     Example:
         scribe dev                    # Run on localhost:5000
@@ -1974,7 +2145,7 @@ def dev(host, port, debug, no_reload, path):
     from scribe.migrations import run_migrations
     import glob
 
-    click.echo(f"Starting ScribeEngine development server...")
+    click.echo(f"Starting ScribeFramework development server...")
     click.echo(f"Project: {os.path.abspath(path)}")
 
     # Create app
@@ -2028,7 +2199,7 @@ def dev(host, port, debug, no_reload, path):
 @click.option('--path', default='.', help='Project directory')
 def ide(host, port, app_port, debug, no_reload, path):
     """
-    Run the ScribeEngine IDE (web-based code editor).
+    Run the ScribeFramework IDE (web-based code editor).
 
     The IDE provides:
     - Code editor with .stpl syntax highlighting
@@ -2055,7 +2226,7 @@ def ide(host, port, app_port, debug, no_reload, path):
         click.echo("   Only use --host 0.0.0.0 on trusted networks.")
         click.echo("   Consider adding authentication for remote access.\n")
 
-    click.echo(f"Starting ScribeEngine IDE...")
+    click.echo(f"Starting ScribeFramework IDE...")
     click.echo(f"Project: {os.path.abspath(path)}")
 
     # Create GUI app
@@ -2125,7 +2296,7 @@ def serve(host, port, threads, path):
     from scribe.migrations import run_migrations
     from waitress import serve as waitress_serve
 
-    click.echo(f"Starting ScribeEngine production server...")
+    click.echo(f"Starting ScribeFramework production server...")
     click.echo(f"Project: {os.path.abspath(path)}")
 
     # Create Flask app (production mode)
@@ -2201,7 +2372,7 @@ def new_migration(name, path):
 @click.option('--yes', '-y', is_flag=True, help='Skip confirmation prompt')
 def uninstall(yes):
     """
-    Uninstall ScribeEngine from your system.
+    Uninstall ScribeFramework from your system.
 
     This removes the scribe executable from your PATH.
 
@@ -2215,22 +2386,22 @@ def uninstall(yes):
     executable_path = shutil.which('scribe')
 
     if not executable_path:
-        click.echo("ScribeEngine is not installed (scribe command not found in PATH)")
+        click.echo("ScribeFramework is not installed (scribe command not found in PATH)")
         return
 
-    click.echo(f"ScribeEngine is installed at: {executable_path}")
+    click.echo(f"ScribeFramework is installed at: {executable_path}")
 
     if not yes:
-        if not click.confirm("\nAre you sure you want to uninstall ScribeEngine?"):
+        if not click.confirm("\nAre you sure you want to uninstall ScribeFramework?"):
             click.echo("Uninstall cancelled")
             return
 
     try:
         # Remove the executable
         os.remove(executable_path)
-        click.echo(f"\n✓ Successfully uninstalled ScribeEngine")
+        click.echo(f"\n✓ Successfully uninstalled ScribeFramework")
         click.echo(f"  Removed: {executable_path}")
-        click.echo("\nThank you for using ScribeEngine!")
+        click.echo("\nThank you for using ScribeFramework!")
 
     except PermissionError:
         click.echo(f"\n✗ Permission denied. The executable is in a system directory.")
