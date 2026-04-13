@@ -239,7 +239,7 @@ function registerScribeLanguage() {
 
                 // ========== HTML COMMENT STATE ==========
                 htmlComment: [
-                    [/-->/, { token: 'comment.html', next: '@pop' }],
+                    [/--!?>/, { token: 'comment.html', next: '@pop' }],
                     [/./, 'comment.html']
                 ],
 
