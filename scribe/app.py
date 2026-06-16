@@ -675,3 +675,18 @@ def setup_jinja_globals(app: Flask):
     """
     app.jinja_env.globals['csrf'] = forms.csrf_token
     app.jinja_env.globals['url_for'] = response.url_for
+ else:
+            handler = decorator(handler)
+
+    return handler
+
+
+def setup_jinja_globals(app: Flask):
+    """
+    Add global functions to Jinja2 templates.
+
+    Args:
+        app: Flask application
+    """
+    app.jinja_env.globals['csrf'] = forms.csrf_token
+    app.jinja_env.globals['url_for'] = response.url_for

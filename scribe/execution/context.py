@@ -195,40 +195,108 @@ class ExecutionContext:
             
             self.namespace['frame'] = frame
 
-            # Safe line-by-line return transformation.
-            # We only touch a line if its stripped content starts with the
-            # `return` keyword — this never fires for `return` mid-line
-            # (inside strings or comments) because those don't start a line
-            # with `return` after stripping leading whitespace.
-            processed_lines = []
-            for line in code.split('\n'):
-                stripped = line.lstrip()
-                line_indent = line[:len(line) - len(stripped)]
-                if (stripped == 'return'
-                        or stripped.startswith('return ')
-                        or stripped.startswith('return\t')):
-                    # Capture all locals before this return so that variables
-                    # assigned before an early exit are available to templates.
-                    processed_lines.append(
-                        f"{line_indent}__locals__.update(locals())"
-                    )
-                    processed_lines.append(line)
-                else:
-                    processed_lines.append(line)
+            # Robust AST-based return transformation.
+            # We wrap the user code in a function and inject variable capture
+            # logic before any top-level return statements.
+            import ast
 
-            # Indent the processed body by 4 spaces (one level inside the
-            # wrapper function), then append the end-of-function capture line
-            # at the same indentation level.
-            indented_body = textwrap.indent('\n'.join(processed_lines), '    ')
-            wrapper_src = (
-                f"def __scribe_route_handler__():\n"
-                f"{indented_body}\n"
-                f"    __locals__.update(locals())\n"
+            tree = ast.parse(code)
+
+            class ReturnTransformer(ast.NodeTransformer):
+                def __init__(self):
+                    self.depth = 0
+
+                def visit_FunctionDef(self, node):
+                    self.depth += 1
+                    res = self.generic_visit(node)
+                    self.depth -= 1
+                    return res
+
+                def visit_AsyncFunctionDef(self, node):
+                    self.depth += 1
+                    res = self.generic_visit(node)
+                    self.depth -= 1
+                    return res
+
+                def visit_ClassDef(self, node):
+                    self.depth += 1
+                    res = self.generic_visit(node)
+                    self.depth -= 1
+                    return res
+
+                def visit_Return(self, node):
+                    if self.depth == 0:
+                        # Top-level return (relative to our wrapper)
+                        # We need to insert __locals__.update(locals()) before this return
+                        capture_node = ast.Expr(
+                            value=ast.Call(
+                                func=ast.Attribute(
+                                    value=ast.Name(id='__locals__', ctx=ast.Load()),
+                                    attr='update',
+                                    ctx=ast.Load()
+                                ),
+                                args=[
+                                    ast.Call(
+                                        func=ast.Name(id='locals', ctx=ast.Load()),
+                                        args=[],
+                                        keywords=[]
+                                    )
+                                ],
+                                keywords=[]
+                            )
+                        )
+                        return [capture_node, node]
+                    return node
+
+            # Transform the body
+            transformer = ReturnTransformer()
+            new_body = []
+            for node in tree.body:
+                result = transformer.visit(node)
+                if isinstance(result, list):
+                    new_body.extend(result)
+                else:
+                    new_body.append(result)
+
+            # Add final capture at end of function
+            final_capture = ast.Expr(
+                value=ast.Call(
+                    func=ast.Attribute(
+                        value=ast.Name(id='__locals__', ctx=ast.Load()),
+                        attr='update',
+                        ctx=ast.Load()
+                    ),
+                    args=[
+                        ast.Call(
+                            func=ast.Name(id='locals', ctx=ast.Load()),
+                            args=[],
+                            keywords=[]
+                        )
+                    ],
+                    keywords=[]
+                )
+            )
+            new_body.append(final_capture)
+
+            # Wrap in function
+            wrapper = ast.FunctionDef(
+                name='__scribe_route_handler__',
+                args=ast.arguments(
+                    posonlyargs=[], args=[], vararg=None, kwonlyargs=[],
+                    kw_defaults=[], kwarg=None, defaults=[]
+                ),
+                body=new_body,
+                decorator_list=[],
+                returns=None
             )
 
-            # Execute the function definition in the shared namespace so that
-            # the function body can access db, session, request, etc. as globals.
-            exec(wrapper_src, self.namespace)  # noqa: S102
+            # Create module and compile
+            new_tree = ast.Module(body=[wrapper], type_ignores=[])
+            ast.fix_missing_locations(new_tree)
+            
+            # Execute the function definition in the shared namespace
+            code_obj = compile(new_tree, filename="<template>", mode="exec")
+            exec(code_obj, self.namespace)  # noqa: S102
 
             # Call the wrapper and capture any explicit return value.
             result = self.namespace['__scribe_route_handler__']()

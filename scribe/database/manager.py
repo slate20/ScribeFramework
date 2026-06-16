@@ -141,6 +141,22 @@ class DatabaseManager:
             except Exception as e:
                 print(f"Warning: Error closing database connection: {e}")
 
+    def commit_all(self):
+        """Commit transactions on all database connections"""
+        for name, adapter in self._connections.items():
+            try:
+                adapter.commit()
+            except Exception as e:
+                print(f"Warning: Error committing transaction on '{name}': {e}")
+
+    def rollback_all(self):
+        """Rollback transactions on all database connections"""
+        for name, adapter in self._connections.items():
+            try:
+                adapter.rollback()
+            except Exception as e:
+                print(f"Warning: Error rolling back transaction on '{name}': {e}")
+
     # Prevent direct method calls - require explicit connection names
     def __getattr__(self, name: str):
         """
