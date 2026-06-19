@@ -1147,6 +1147,7 @@ $}
    3. Delete lib/auth_helpers.py
    4. Delete migrations/001_users.sql
    5. Update navbar in base.stpl (remove session check)
+<<<<<<< HEAD
 ================================================================
 #}
 
