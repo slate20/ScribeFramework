@@ -29,8 +29,7 @@ Welcome to your {project_name} documentation! These guides will help you get the
 2. **[Template Syntax](02_TEMPLATE_SYNTAX.md)** - Complete reference for .stpl files
 3. **[Database](03_DATABASE.md)** - Working with databases, queries, and migrations
 4. **[Authentication](04_AUTHENTICATION.md)** - Understanding and customizing the auth system
-5. **[HTMX & SSE](05_INTERACTIVITY.md)** - Build modern, interactive apps without Javascript
-6. **[Deployment](06_DEPLOYMENT.md)** - Deploying your app to production
+5. **[Deployment](05_DEPLOYMENT.md)** - Deploying your app to production
 
 ## 🚀 Recommended Reading Order
 
@@ -38,16 +37,16 @@ Welcome to your {project_name} documentation! These guides will help you get the
 1. Start with Getting Started
 2. Read Template Syntax
 3. Explore Database guide
-4. Dive into Interactivity (HTMX & SSE)
-5. Learn about Authentication (if using auth)
+4. Dive into Authentication (if using auth)
 
 **Ready for production?**
 - Jump to Deployment guide
 
 ## 🔗 More Resources
 
-- **Examples:** Check out the interactive demos and auth routes in your `app.stpl`
-- **Community:** [GitHub Issues](https://github.com/yourusername/scribe-framework/issues)
+- **Full Documentation:** See the `new-architecture/` directory for complete technical specs
+- **Examples:** Check out the `/login`, `/dashboard` routes in your `app.stpl`
+- **Community:** [GitHub Issues](https://github.com/yourusername/scribe-engine/issues)
 
 ## 💡 Quick Reference
 
@@ -60,20 +59,18 @@ $}
 <h1>'''+'''{{ message }}</h1>
 ```
 
-**SSE Route:**
+**Query database:**
 ```python
-@route('/stream')
-@sse
-'''+'''{$
-yield frame(event="message")
+{$
+users = db['default'].query("SELECT * FROM users")
 $}
 ```
 
-**HTMX Fragment:**
+**Protect a route:**
 ```python
-@route('/partial')
-@no_layout
-'''+'''{$
+@route('/admin')
+@require_auth
+{$
 ... $}
 ```
 
@@ -779,74 +776,7 @@ See [Getting Started](01_GETTING_STARTED.md) for more examples.
     with open(os.path.join(docs_path, '04_AUTHENTICATION.md'), 'w') as f:
         f.write(auth_guide)
 
-    # docs/05_INTERACTIVITY.md
-    interactivity_guide = '''# Interactive Apps (HTMX & SSE)
-
-ScribeFramework includes built-in support for building modern, interactive web applications without writing custom JavaScript.
-
-## ⚡ HTMX Integration
-
-HTMX allows you to perform AJAX requests using HTML attributes.
-
-### Using @no_layout
-
-Use the `@no_layout` decorator for routes that should only return a fragment of HTML (ideal for HTMX).
-
-```python
-@route('/time')
-@no_layout
-'''+'''{$
-import datetime
-current_time = datetime.datetime.now().strftime("%H:%M:%S")
-$}
-<p>The time is <strong>{{ current_time }}</strong></p>
-```
-
-In your main template:
-```html
-<div id="time-display">Wait for it...</div>
-<button class="btn btn-primary" hx-get="/time" hx-target="#time-display">Update Time</button>
-```
-
-## 📡 Server-Sent Events (SSE)
-
-SSE allows the server to push updates to the client in real-time.
-
-### Using @sse
-
-Decorate a route with `@sse` to enable event-stream responses.
-
-```python
-@route('/counter')
-@sse
-'''+'''{$
-import time
-def count():
-    for i in range(1, 11):
-        yield frame(template="Count: {{ i }}", i=i, event="message")
-        time.sleep(1)
-return count()
-$}
-```
-
-### HTMX SSE Extension
-
-Your project includes the HTMX SSE extension. Use it like this:
-
-```html
-<div hx-ext="sse" sse-connect="/counter" sse-swap="message">
-    Waiting for updates...
-</div>
-```
-
-Every "message" event from the server will replace the contents of this div.
-'''
-
-    # Write docs/05_INTERACTIVITY.md
-    with open(os.path.join(docs_path, '05_INTERACTIVITY.md'), 'w') as f:
-        f.write(interactivity_guide)
-
-    # docs/06_DEPLOYMENT.md
+    # docs/05_DEPLOYMENT.md
     deployment_guide = '''# Deployment Guide
 
 Deploy your ScribeFramework app to production.
@@ -942,8 +872,8 @@ sudo systemctl start myapp
 See other guides for development workflows.
 '''
 
-    # Write docs/06_DEPLOYMENT.md
-    with open(os.path.join(docs_path, '06_DEPLOYMENT.md'), 'w') as f:
+    # Write docs/05_DEPLOYMENT.md
+    with open(os.path.join(docs_path, '05_DEPLOYMENT.md'), 'w') as f:
         f.write(deployment_guide)
 
 
@@ -990,7 +920,7 @@ def new(project_name, path):
       "database": "app.db"
     }
   },
-  "secret_key": "CHANGE_THIS_TO_A_RANDOM_SECRET_KEY_IN_PRODUCTION"
+  "SECRET_KEY": "CHANGE_THIS_TO_A_RANDOM_SECRET_KEY_IN_PRODUCTION"
 }
 '''
     with open(os.path.join(project_path, 'scribe.json'), 'w') as f:
@@ -1005,15 +935,9 @@ def new(project_name, path):
     <title>{{ page_title | default('My App') }} - ScribeFramework</title>
     <meta name="description" content="{{ page_description | default('Built with ScribeFramework') }}">
     <link rel="stylesheet" href="/static/css/style.css">
-    
-    <!-- HTMX Core -->
-    <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js"></script>
-    <!-- HTMX SSE Extension -->
-    <script src="https://unpkg.com/htmx-ext-sse@2.2.4/sse.js"></script>
-
     {'''+ '''% block extra_head %}{'''+ '''% endblock %}
 </head>
-<body hx-headers='{"X-CSRFToken": "{{ csrf_token() }}"}'>
+<body>
     <header class="navbar">
         <div class="container">
             <div class="navbar-content">
@@ -1041,15 +965,18 @@ def new(project_name, path):
 
     <main class="main-content">
         '''+'''<!-- Flash messages -->
-        {'''+ '''% with messages = get_flashed_messages(with_categories=true) %}
-            {'''+ '''% if messages %}
-                <div class="container">
+        <div id="toast-container" class="toast-container">
+            {'''+ '''% with messages = get_flashed_messages(with_categories=true) %}
+                {'''+ '''% if messages %}
                     {'''+ '''% for category, message in messages %}
-                        <div class="alert alert-{{ category }}">{{ message }}</div>
+                        <div class="alert alert-{{ category }} toast-message">
+                            {{ message }}
+                            <button type="button" class="close-toast" onclick="this.parentElement.remove();">&times;</button>
+                        </div>
                     {'''+ '''% endfor %}
-                </div>
-            {'''+ '''% endif %}
-        {'''+ '''% endwith %}
+                {'''+ '''% endif %}
+            {'''+ '''% endwith %}
+        </div>
 
         {'''+ '''% block content %}
             '''+'''<!-- Route content goes here -->
@@ -1058,9 +985,24 @@ def new(project_name, path):
 
     <footer class="footer">
         <div class="container">
-            <p>&copy; 2025 My ScribeFramework App. Built with <a href="https://github.com/yourusername/scribe-framework">ScribeFramework</a>.</p>
+            <p>&copy; 2025 My ScribeFramework App. Built with <a href="https://github.com/yourusername/scribe-engine">ScribeEngine</a>.</p>
         </div>
     </footer>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Toast auto-dismiss
+            const toasts = document.querySelectorAll('.toast-message');
+            toasts.forEach(toast => {
+                setTimeout(() => {
+                    toast.style.opacity = '0';
+                    toast.style.transform = 'translateY(20px)';
+                    toast.style.transition = 'opacity 0.5s ease, transform 0.5s ease';
+                    setTimeout(() => toast.remove(), 500);
+                }, 4000);
+            });
+        });
+    </script>
 
     {'''+ '''% block extra_scripts %}{'''+ '''% endblock %}
 </body>
@@ -1311,7 +1253,7 @@ $}
         </div>
 
         <div class="info-box">
-            <h3>About This Page</h3>
+            <h3>🔐 About This Page</h3>
             <p>This route is protected by the <code>@require_auth</code> decorator.
                Only logged-in users can see this page.</p>
             <p>Your session contains: <code>session['user_id'] = {'''+ '''{ session['user_id'] }}</code></p>
@@ -1361,14 +1303,13 @@ $}
     <div class="card">
         <h1>About This Project</h1>
 
-        <p>This is a ScribeFramework web application. ScribeFramework lets you write Python
+        <p>This is a ScribeFramework web application. ScribeEngine lets you write Python
            directly in templates, eliminating boilerplate and making web development fast.</p>
 
         <h2>Framework Features</h2>
         <ul>
             <li>Write Python in templates with <code>&lcub;$ ... $&rcub;</code> blocks</li>
             <li>Define routes using <code>&#64;route()</code> decorators</li>
-            <li><strong>NEW:</strong> Native HTMX and SSE support</li>
             <li>Built-in authentication and security</li>
             <li>Unified database API (SQLite, PostgreSQL, MySQL, MSSQL)</li>
             <li>Automatic CSRF protection</li>
@@ -1395,7 +1336,7 @@ $}
 
     # Create modern CSS file with CSS variables
     css = '''/* ================================================================
-   SCRIBEFRAMEWORK - DEFAULT THEME
+   SCRIBEENGINE - DEFAULT THEME
 
    CUSTOMIZE THIS:
    Change the CSS variables below to customize colors, spacing, etc.
@@ -1462,32 +1403,6 @@ $}
     /* Layout */
     --container-max-width: 1200px;
     --container-narrow-width: 600px;
-}
-
-/* SSE and HTMX Demo Styles */
-.sse-counter {
-    font-size: var(--font-size-xl);
-    font-weight: 700;
-    color: var(--primary-color);
-}
-
-.search-results {
-    min-height: 50px;
-}
-
-.search-results ul {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-}
-
-.search-results li {
-    padding: var(--spacing-sm) 0;
-    border-bottom: 1px solid var(--border-color);
-}
-
-.search-results li:last-child {
-    border-bottom: none;
 }
 
 
@@ -1700,7 +1615,7 @@ h3 { font-size: var(--font-size-xl); }
 
 
 /* ================================================================
-   ALERTS
+   ALERTS & TOASTS
    ================================================================ */
 
 .alert {
@@ -1732,6 +1647,49 @@ h3 { font-size: var(--font-size-xl); }
     background: var(--warning-bg);
     color: var(--warning-color);
     border-color: var(--warning-color);
+}
+
+/* Toast Container */
+.toast-container {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    pointer-events: none;
+}
+
+.toast-message {
+    pointer-events: auto;
+    min-width: 250px;
+    max-width: 350px;
+    margin-bottom: 0 !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    animation: slideIn 0.3s ease-out;
+}
+
+.close-toast {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 1.2rem;
+    opacity: 0.5;
+    padding: 0 0 0 10px;
+    color: inherit;
+}
+
+.close-toast:hover {
+    opacity: 1;
+}
+
+@keyframes slideIn {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
 }
 
 
@@ -1972,7 +1930,7 @@ INSERT INTO users (username, password_hash) VALUES
     # Create README
     readme = f'''# {project_name}
 
-A ScribeFramework web application with authentication, database, and interactive features (HTMX + SSE).
+A ScribeFramework web application with authentication, database, and modern UI.
 
 ## Quick Start
 
@@ -1986,20 +1944,12 @@ Then open http://localhost:5000
 - Username: `testuser`
 - Password: `password123`
 
-## Interactive Features
-
-This project comes pre-configured with:
-- **HTMX:** For dynamic content loading without page refreshes.
-- **SSE:** For real-time data streaming from the server.
-
-Check the homepage in `app.stpl` to see these in action!
-
 ## Project Structure
 
 ```
 {project_name}/
 ├── app.stpl              # Routes and templates
-├── base.stpl             # HTML layout (includes HTMX)
+├── base.stpl             # HTML layout
 ├── scribe.json           # Configuration
 ├── lib/                  # Helper functions
 │   └── auth_helpers.py   # Password utilities
