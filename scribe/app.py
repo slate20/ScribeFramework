@@ -10,6 +10,7 @@ This module handles:
 
 import os
 import re
+import sys
 import glob
 import inspect
 from pathlib import Path
@@ -23,6 +24,78 @@ from scribe.execution import ExecutionContext
 from scribe.loader import load_helper_modules
 from scribe.helpers import response, forms, auth
 from scribe.helpers.auth import configure_auth  # NEW
+
+
+def inject_project_venv(project_path: str, venv_hint: Optional[str] = None):
+    """
+    Inject a project virtual environment's full Python path into sys.path.
+
+    Rather than guessing which stdlib modules to include, we ask the venv's
+    own Python interpreter for its sys.path. This gives us the complete stdlib
+    AND site-packages for that Python version — no hidden imports needed.
+
+    Resolution order:
+    1. ``venv_hint`` — explicit path from scribe.json "venv" key
+    2. ``VIRTUAL_ENV`` env var — set when user runs ``source .venv/bin/activate``
+    3. Scan project directory for ``.venv``, ``venv``, ``env``
+    """
+    import subprocess
+    import json
+
+    candidates = []
+
+    if venv_hint:
+        candidates.append(os.path.abspath(os.path.join(project_path, venv_hint)))
+
+    virtual_env = os.environ.get('VIRTUAL_ENV')
+    if virtual_env:
+        candidates.append(virtual_env)
+
+    for name in ('.venv', 'venv', 'env'):
+        candidates.append(os.path.join(project_path, name))
+
+    for venv_path in candidates:
+        if not os.path.isdir(venv_path):
+            continue
+
+        # Find the venv Python executable (Unix and Windows layouts)
+        python_exe = None
+        for candidate in [
+            os.path.join(venv_path, 'bin', 'python'),
+            os.path.join(venv_path, 'bin', 'python3'),
+            os.path.join(venv_path, 'Scripts', 'python.exe'),
+        ]:
+            if os.path.isfile(candidate):
+                python_exe = candidate
+                break
+
+        if not python_exe:
+            continue
+
+        # Ask the venv Python for its full sys.path — stdlib + site-packages
+        try:
+            result = subprocess.run(
+                [python_exe, '-c', 'import sys, json; print(json.dumps(sys.path))'],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                continue
+
+            venv_paths = json.loads(result.stdout.strip())
+            added = 0
+            for path in venv_paths:
+                if path and path not in sys.path:
+                    sys.path.append(path)
+                    added += 1
+
+            print(f"  Venv: {venv_path} ({added} paths injected)")
+            return
+
+        except Exception as e:
+            print(f"  Warning: could not query venv at {python_exe}: {e}")
+            continue
 
 
 def should_skip_layout(template: str) -> bool:
@@ -106,6 +179,20 @@ def wrap_template_with_layout(template: str, base_template_name: str = 'base.stp
     )
 
 
+def register_db_teardown(app: Flask):
+    """
+    Register a teardown_request handler to automatically manage transactions.
+    """
+    @app.teardown_request
+    def handle_db_transactions(exception=None):
+        db_manager = app.config.get('DB')
+        if db_manager:
+            if exception:
+                db_manager.rollback_all()
+            else:
+                db_manager.commit_all()
+
+
 def create_app(
     project_path: str = '.',
     config: Optional[Dict[str, Any]] = None
@@ -147,6 +234,9 @@ def create_app(
     # Load configuration
     app_config = load_config(project_path, config)
     app.config.update(app_config)
+
+    # Inject project venv so user-installed libraries are importable in templates
+    inject_project_venv(project_path, venv_hint=app_config.get('venv'))
 
     # Store project path for GUI routes
     app.config['PROJECT_PATH'] = project_path
@@ -190,6 +280,9 @@ def create_app(
 
     # Add Jinja2 global functions
     setup_jinja_globals(app)
+
+    # Register automatic transaction management
+    register_db_teardown(app)
 
     print(f"\n✓ ScribeEngine app created with {len(routes)} route(s)")
 
@@ -261,6 +354,9 @@ def create_standalone_gui_app(project_path: str = '.', config: Optional[Dict[str
     # Initialize CSRF protection
     csrf.init_app(app)
     app.config['CSRF'] = csrf
+
+    # Register automatic transaction management
+    register_db_teardown(app)
 
     print(f"\n✓ Standalone GUI app created")
     print(f"  Project: {project_path}")
