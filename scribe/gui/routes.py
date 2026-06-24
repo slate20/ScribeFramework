@@ -295,47 +295,76 @@ def get_database_tables(connection_name):
         if not db_manager:
             return jsonify({'tables': [], 'error': 'No database configured'}), 500
 
-        # Get specific connection
         if connection_name not in db_manager:
             return jsonify({'tables': [], 'error': f'Connection "{connection_name}" not found'}), 404
 
         db = db_manager[connection_name]
-
-        if not hasattr(db, 'connection'):
-            return jsonify({'tables': [], 'error': 'Database type not supported yet'}), 500
-
-        cursor = db.connection.cursor()
-
-        # Detect database type and use appropriate query
         db_type = db.config.get('type', 'sqlite').lower()
 
         if db_type == 'sqlite':
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-            tables = [row[0] for row in cursor.fetchall()]
+            rows = db.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            tables = [row['name'] for row in rows]
         elif db_type == 'postgresql':
-            cursor.execute("""
-                SELECT table_name
+            rows = db.query("""
+                SELECT table_schema, table_name
                 FROM information_schema.tables
-                WHERE table_schema = 'public'
-                ORDER BY table_name
+                WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+                ORDER BY table_schema, table_name
             """)
-            tables = [row[0] for row in cursor.fetchall()]
+            tables = [f"{row['table_schema']}.{row['table_name']}" for row in rows]
         elif db_type == 'mssql':
-            cursor.execute("""
+            rows = db.query("""
                 SELECT TABLE_NAME
                 FROM INFORMATION_SCHEMA.TABLES
                 WHERE TABLE_TYPE = 'BASE TABLE'
                 ORDER BY TABLE_NAME
             """)
-            tables = [row[0] if isinstance(row, tuple) else row['TABLE_NAME'] for row in cursor.fetchall()]
+            tables = [row['TABLE_NAME'] for row in rows]
         else:
             return jsonify({'tables': [], 'error': f'Database type {db_type} not supported yet'}), 500
 
-        cursor.close()
         return jsonify({'tables': tables})
 
     except Exception as e:
         return jsonify({'tables': [], 'error': str(e)}), 500
+
+
+def _get_table_columns(db, db_type, table_name):
+    """Get ordered column names for a table via schema queries (used when table is empty)."""
+    if db_type == 'sqlite':
+        rows = db.query(f"PRAGMA table_info({table_name})")
+        return [row['name'] for row in rows]
+    elif db_type == 'postgresql':
+        parts = table_name.split('.', 1)
+        if len(parts) == 2:
+            rows = db.query(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position",
+                (parts[0], parts[1])
+            )
+        else:
+            rows = db.query(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_name = ? "
+                "ORDER BY ordinal_position",
+                (table_name,)
+            )
+        return [row['column_name'] for row in rows]
+    elif db_type == 'mssql':
+        rows = db.query(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+            "WHERE TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
+            (table_name,)
+        )
+        return [row['COLUMN_NAME'] for row in rows]
+    return []
+
+
+def _serialize_value(v):
+    """Convert non-JSON-serializable database values to strings."""
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return v
+    return str(v)
 
 
 def get_table_data(connection_name, table_name):
@@ -352,75 +381,45 @@ def get_table_data(connection_name, table_name):
         if not db_manager:
             return jsonify({'error': 'No database configured'}), 500
 
-        # Get specific connection
         if connection_name not in db_manager:
             return jsonify({'error': f'Connection "{connection_name}" not found'}), 404
 
         db = db_manager[connection_name]
 
-        # Security: validate table name (prevent SQL injection)
-        if not table_name.replace('_', '').isalnum():
+        # Security: validate table name - allow schema.table format, each part alphanumeric/underscore
+        parts = table_name.split('.')
+        if len(parts) > 2 or not all(p and p.replace('_', '').isalnum() for p in parts):
             return jsonify({'error': 'Invalid table name'}), 400
 
-        # Get column names
-        if not hasattr(db, 'connection'):
-            return jsonify({'error': 'Database type not supported yet'}), 500
-
-        cursor = db.connection.cursor()
         db_type = db.config.get('type', 'sqlite').lower()
 
-        # Get column info based on database type
-        if db_type == 'sqlite':
-            cursor.execute(f"PRAGMA table_info({table_name})")
-            columns = [row[1] for row in cursor.fetchall()]
-        elif db_type == 'postgresql':
-            cursor.execute("""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public' AND table_name = %s
-                ORDER BY ordinal_position
-            """, (table_name,))
-            columns = [row[0] for row in cursor.fetchall()]
-        elif db_type == 'mssql':
-            cursor.execute("""
-                SELECT COLUMN_NAME
-                FROM INFORMATION_SCHEMA.COLUMNS
-                WHERE TABLE_NAME = %s
-                ORDER BY ORDINAL_POSITION
-            """, (table_name,))
-            columns = [row[0] if isinstance(row, tuple) else row['COLUMN_NAME'] for row in cursor.fetchall()]
-        else:
-            cursor.close()
+        if db_type not in ('sqlite', 'postgresql', 'mssql'):
             return jsonify({'error': f'Database type {db_type} not supported yet'}), 500
 
+        # Get total count
+        count_rows = db.query(f"SELECT COUNT(*) AS cnt FROM {table_name}")
+        total = list(count_rows[0].values())[0] if count_rows else 0
+
+        # Get paginated data
+        offset = (page - 1) * per_page
+        if db_type == 'mssql':
+            rows = db.query(
+                f"SELECT * FROM {table_name} ORDER BY (SELECT NULL) OFFSET ? ROWS FETCH NEXT ? ROWS ONLY",
+                (offset, per_page)
+            )
+        else:
+            rows = db.query(f"SELECT * FROM {table_name} LIMIT ? OFFSET ?", (per_page, offset))
+
+        # Get columns from data if available, otherwise query the schema
+        if rows:
+            columns = list(rows[0].keys())
+        else:
+            columns = _get_table_columns(db, db_type, table_name)
+
         if not columns:
-            cursor.close()
             return jsonify({'error': 'Table not found'}), 404
 
-        # Get total count
-        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
-        total = cursor.fetchone()[0]
-
-        # Get paginated data (handle different placeholder styles)
-        offset = (page - 1) * per_page
-        if db_type == 'sqlite':
-            cursor.execute(f"SELECT * FROM {table_name} LIMIT ? OFFSET ?", (per_page, offset))
-        elif db_type == 'postgresql':
-            cursor.execute(f"SELECT * FROM {table_name} LIMIT %s OFFSET %s", (per_page, offset))
-        elif db_type == 'mssql':
-            # MSSQL uses OFFSET/FETCH syntax (requires ORDER BY)
-            cursor.execute(f"SELECT * FROM {table_name} ORDER BY (SELECT NULL) OFFSET %s ROWS FETCH NEXT %s ROWS ONLY", (offset, per_page))
-
-        # Convert rows to dictionaries
-        rows = cursor.fetchall()
-        data = []
-        for row in rows:
-            row_dict = {}
-            for i, col in enumerate(columns):
-                row_dict[col] = row[i]
-            data.append(row_dict)
-
-        cursor.close()
+        data = [{k: _serialize_value(v) for k, v in row.items()} for row in rows]
 
         return jsonify({
             'table': table_name,
