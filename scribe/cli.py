@@ -284,13 +284,15 @@ if request.method == 'POST':
     username = request.form.get('username', '').strip()
     password = request.form.get('password', '')
 
-    users = db['default'].query(
+    rows = db['default'].query(
         "SELECT * FROM users WHERE username = ?",
         (username,)
     )
 
-    if users and verify_password(users[0]['password_hash'], password):
-        session['user_id'] = users[0]['id']
+    user = rows[0] if rows else None
+
+    if user and verify_password(user['password_hash'], password):
+        session['user_id'] = user['id']
         flash('Welcome back!', 'success')
         return redirect('/')
     else:
@@ -386,7 +388,7 @@ $}
 
 @route('/logout')
 {$
-session.pop('user_id', None)
+session.clear()
 flash('You have been logged out', 'info')
 return redirect('/login')
 $}

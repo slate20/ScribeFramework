@@ -2,9 +2,12 @@
 Microsoft SQL Server database adapter implementation.
 """
 
+import logging
 import pymssql
 from typing import List, Optional, Dict, Any, Union
 from scribe.database.base import DatabaseAdapter, Row
+
+logger = logging.getLogger(__name__)
 
 
 class MSSQLAdapter(DatabaseAdapter):
@@ -64,8 +67,27 @@ class MSSQLAdapter(DatabaseAdapter):
     def close(self):
         """Close MSSQL connection"""
         if self.connection:
-            self.connection.close()
+            try:
+                self.connection.close()
+            except Exception:
+                pass
             self.connection = None
+
+    def _reconnect(self):
+        """Close and re-establish the connection."""
+        logger.warning("MSSQL connection lost, attempting reconnect...")
+        self.close()
+        self.connect()
+        logger.info("MSSQL reconnected successfully.")
+
+    def _execute_with_reconnect(self, fn):
+        """Run fn(), reconnecting once if a connection-level error is raised."""
+        try:
+            return fn()
+        except pymssql.OperationalError as exc:
+            logger.warning("MSSQL connection error: %s. Reconnecting...", exc)
+            self._reconnect()
+            return fn()
 
     def _convert_placeholders(self, sql: str) -> str:
         """
@@ -90,25 +112,23 @@ class MSSQLAdapter(DatabaseAdapter):
         Returns:
             List of Row objects
         """
-        # Convert placeholders
         sql = self._convert_placeholders(sql)
 
-        cursor = self.connection.cursor(as_dict=True)
+        def _run():
+            cursor = self.connection.cursor(as_dict=True)
+            try:
+                if params:
+                    cursor.execute(sql, params)
+                else:
+                    cursor.execute(sql)
+                rows = []
+                for row_data in cursor.fetchall():
+                    rows.append(Row(dict(row_data)))
+                return rows
+            finally:
+                cursor.close()
 
-        try:
-            if params:
-                cursor.execute(sql, params)
-            else:
-                cursor.execute(sql)
-
-            # Fetch all rows and convert to Row objects
-            rows = []
-            for row_data in cursor.fetchall():
-                rows.append(Row(dict(row_data)))
-
-            return rows
-        finally:
-            cursor.close()
+        return self._execute_with_reconnect(_run)
 
     def execute(self, sql: str, params: Optional[tuple] = None) -> int:
         """
@@ -121,29 +141,28 @@ class MSSQLAdapter(DatabaseAdapter):
         Returns:
             Number of affected rows or last insert ID (for INSERT)
         """
-        # Convert placeholders
         sql = self._convert_placeholders(sql)
 
-        cursor = self.connection.cursor()
+        def _run():
+            cursor = self.connection.cursor()
+            try:
+                if params:
+                    cursor.execute(sql, params)
+                else:
+                    cursor.execute(sql)
 
-        try:
-            if params:
-                cursor.execute(sql, params)
-            else:
-                cursor.execute(sql)
+                if sql.strip().upper().startswith('INSERT'):
+                    cursor.execute("SELECT SCOPE_IDENTITY() as id")
+                    result = cursor.fetchone()
+                    if result and result.get('id'):
+                        return int(result['id'])
+                    return cursor.rowcount
+                else:
+                    return cursor.rowcount
+            finally:
+                cursor.close()
 
-            # For INSERT, try to get the last inserted ID using SCOPE_IDENTITY()
-            if sql.strip().upper().startswith('INSERT'):
-                cursor.execute("SELECT SCOPE_IDENTITY() as id")
-                result = cursor.fetchone()
-                if result and result.get('id'):
-                    return int(result['id'])
-                return cursor.rowcount
-            else:
-                # For UPDATE/DELETE, return number of affected rows
-                return cursor.rowcount
-        finally:
-            cursor.close()
+        return self._execute_with_reconnect(_run)
 
     def commit(self):
         """Commit current transaction"""
