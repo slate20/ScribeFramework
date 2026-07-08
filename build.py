@@ -35,10 +35,58 @@ def clean_build_dirs():
             shutil.rmtree(dir_name)
 
 
+def prepare_runtime_bundle():
+    """
+    Copy the scribe runtime package (minus gui/cli.py/builder) into
+    scribe_runtime_src/ at the repo root, so scribe_build_tool.spec can
+    bundle it as plain data. scribe-build (frozen) copies this into a
+    project's _scribe_build/ during staging — it can't introspect its own
+    frozen modules for that, since they live inside a PYZ archive rather
+    than as files on disk.
+    """
+    from scribe.builder.runtime_source import copy_runtime_package
+
+    print("\nPreparing scribe_runtime_src/ ...")
+    copy_runtime_package('scribe_runtime_src')
+
+
+def _build_one(spec_file, exe_base_name, platform_name):
+    """Run PyInstaller for one spec file and copy the result into release/."""
+    print(f"\nRunning PyInstaller ({spec_file})...")
+    result = subprocess.run(
+        ['pyinstaller', spec_file, '--clean'],
+        check=True
+    )
+
+    if result.returncode != 0:
+        print(f"ERROR: Build failed for {spec_file}")
+        sys.exit(1)
+
+    exe_name = f'{exe_base_name}.exe' if platform_name == 'windows' else exe_base_name
+    exe_path = Path('dist') / exe_name
+    if not exe_path.exists():
+        print(f"ERROR: Executable not found at {exe_path}")
+        sys.exit(1)
+
+    release_dir = Path('release')
+    release_dir.mkdir(exist_ok=True)
+
+    release_name = f'{exe_base_name}-{platform_name}'
+    if platform_name == 'windows':
+        release_name += '.exe'
+
+    release_path = release_dir / release_name
+    shutil.copy2(exe_path, release_path)
+
+    size_mb = os.path.getsize(release_path) / (1024 * 1024)
+    print(f"  {release_path} ({size_mb:.1f} MB)")
+    return release_path
+
+
 def build_executable():
-    """Build the standalone executable using PyInstaller."""
+    """Build the standalone scribe and scribe-build executables using PyInstaller."""
     print("=" * 60)
-    print("Building ScribeEngine Standalone Executable")
+    print("Building ScribeEngine Standalone Executables")
     print("=" * 60)
 
     # Check if PyInstaller is installed
@@ -51,52 +99,26 @@ def build_executable():
 
     # Clean old builds
     clean_build_dirs()
+    if os.path.exists('scribe_runtime_src'):
+        shutil.rmtree('scribe_runtime_src')
 
-    # Run PyInstaller
-    print("\nRunning PyInstaller...")
-    result = subprocess.run(
-        ['pyinstaller', 'scribe.spec', '--clean'],
-        check=True
-    )
+    prepare_runtime_bundle()
 
-    if result.returncode != 0:
-        print("ERROR: Build failed")
-        sys.exit(1)
-
-    # Get platform info
     platform_name = get_platform_name()
-    exe_name = 'scribe.exe' if platform_name == 'windows' else 'scribe'
-
-    # Check if build succeeded
-    exe_path = Path('dist') / exe_name
-    if not exe_path.exists():
-        print(f"ERROR: Executable not found at {exe_path}")
-        sys.exit(1)
-
-    # Create release directory
-    release_dir = Path('release')
-    release_dir.mkdir(exist_ok=True)
-
-    # Copy executable to release with platform name
-    release_name = f'scribe-{platform_name}'
-    if platform_name == 'windows':
-        release_name += '.exe'
-
-    release_path = release_dir / release_name
-    shutil.copy2(exe_path, release_path)
-
-    # Get file size
-    size_mb = os.path.getsize(release_path) / (1024 * 1024)
+    results = [
+        _build_one('scribe.spec', 'scribe', platform_name),
+        _build_one('scribe_build_tool.spec', 'scribe-build', platform_name),
+    ]
 
     print("\n" + "=" * 60)
     print("✓ Build Successful!")
     print("=" * 60)
     print(f"Platform: {platform_name}")
-    print(f"Executable: {release_path}")
-    print(f"Size: {size_mb:.1f} MB")
-    print("\nTest it with:")
-    print(f"  {release_path} --version")
-    print(f"  {release_path} --help")
+    for path in results:
+        print(f"Executable: {path}")
+    print("\nTest with:")
+    print(f"  {results[0]} --version")
+    print(f"  {results[1]} build --path <project>")
     print("=" * 60)
 
 

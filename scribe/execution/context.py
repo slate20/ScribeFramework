@@ -5,11 +5,122 @@ This module provides a controlled environment for executing Python code
 from template files, with access to database, session, request, and helpers.
 """
 
+import ast
 import textwrap
 import types
 import inspect
 from typing import Dict, Any, Optional
 from scribe.execution.builtins import get_safe_builtins
+
+
+def compile_route_code(code: str) -> types.CodeType:
+    """
+    Transform and compile a route's Python block into a code object.
+
+    Wraps the code in a function (so bare `return` is legal) and injects
+    `__locals__.update(locals())` calls before every top-level return and at
+    the end of the body, so user-assigned variables survive the function
+    wrapper and become visible to get_variables() after execution.
+
+    This is split out from ExecutionContext.execute() so that a build tool
+    can precompile route code once (with the exact interpreter that will
+    later run it) instead of recompiling on every request.
+    """
+    tree = ast.parse(code)
+
+    class ReturnTransformer(ast.NodeTransformer):
+        def __init__(self):
+            self.depth = 0
+
+        def visit_FunctionDef(self, node):
+            self.depth += 1
+            res = self.generic_visit(node)
+            self.depth -= 1
+            return res
+
+        def visit_AsyncFunctionDef(self, node):
+            self.depth += 1
+            res = self.generic_visit(node)
+            self.depth -= 1
+            return res
+
+        def visit_ClassDef(self, node):
+            self.depth += 1
+            res = self.generic_visit(node)
+            self.depth -= 1
+            return res
+
+        def visit_Return(self, node):
+            if self.depth == 0:
+                # Top-level return (relative to our wrapper)
+                # We need to insert __locals__.update(locals()) before this return
+                capture_node = ast.Expr(
+                    value=ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Name(id='__locals__', ctx=ast.Load()),
+                            attr='update',
+                            ctx=ast.Load()
+                        ),
+                        args=[
+                            ast.Call(
+                                func=ast.Name(id='locals', ctx=ast.Load()),
+                                args=[],
+                                keywords=[]
+                            )
+                        ],
+                        keywords=[]
+                    )
+                )
+                return [capture_node, node]
+            return node
+
+    # Transform the body
+    transformer = ReturnTransformer()
+    new_body = []
+    for node in tree.body:
+        result = transformer.visit(node)
+        if isinstance(result, list):
+            new_body.extend(result)
+        else:
+            new_body.append(result)
+
+    # Add final capture at end of function
+    final_capture = ast.Expr(
+        value=ast.Call(
+            func=ast.Attribute(
+                value=ast.Name(id='__locals__', ctx=ast.Load()),
+                attr='update',
+                ctx=ast.Load()
+            ),
+            args=[
+                ast.Call(
+                    func=ast.Name(id='locals', ctx=ast.Load()),
+                    args=[],
+                    keywords=[]
+                )
+            ],
+            keywords=[]
+        )
+    )
+    new_body.append(final_capture)
+
+    # Wrap in function
+    wrapper = ast.FunctionDef(
+        name='__scribe_route_handler__',
+        args=ast.arguments(
+            posonlyargs=[], args=[], vararg=None, kwonlyargs=[],
+            kw_defaults=[], kwarg=None, defaults=[]
+        ),
+        body=new_body,
+        decorator_list=[],
+        returns=None
+    )
+
+    # Create module and compile
+    new_tree = ast.Module(body=[wrapper], type_ignores=[])
+    ast.fix_missing_locations(new_tree)
+
+    return compile(new_tree, filename="<template>", mode="exec")
 
 
 class ExecutionContext:
@@ -148,14 +259,6 @@ class ExecutionContext:
         self.namespace, making all user-assigned variables available to
         get_variables() and therefore to the Jinja2 template.
 
-        ### Safe return transformation
-
-        We do a minimal, safe transformation of `return` lines: a line is
-        only transformed if its *stripped* form starts with the keyword
-        `return` as a whole word. This means `return` appearing mid-line
-        (e.g. inside a string like `"please return your books"`) is never
-        touched, because it won't appear at the start of a stripped line.
-
         Args:
             code: Python code to execute
 
@@ -164,6 +267,24 @@ class ExecutionContext:
 
         Raises:
             ExecutionError: wraps any exception raised by the user code
+        """
+        try:
+            code_obj = compile_route_code(code)
+        except Exception as e:
+            raise ExecutionError(f"Error executing template code: {e}") from e
+
+        return self.execute_compiled(code_obj)
+
+    def execute_compiled(self, code_obj: types.CodeType) -> Any:
+        """
+        Run an already-compiled route code object (see compile_route_code)
+        against this context's namespace.
+
+        This is the runtime half of execute() — split out so a build tool
+        can precompile route code ahead of time (e.g. for a frozen,
+        distributable executable) and have the exact same execution
+        semantics at request time, just skipping the parse/transform/compile
+        step.
         """
         try:
             # Inject the locals capture dict into the namespace so the
@@ -179,123 +300,23 @@ class ExecutionContext:
                 target_template = template or self.current_template
                 if not target_template:
                     return ""
-                
+
                 # Capture caller's locals
                 import inspect
                 f = inspect.currentframe().f_back
                 caller_vars = f.f_locals.copy()
                 caller_vars.update(kwargs)
-                
+
                 html = self.render(target_template, extra_vars=caller_vars)
                 if event:
                     # Fix: handle multiline HTML for SSE
                     data_lines = [f"data: {line}" for line in html.split('\n')]
                     return f"event: {event}\n" + "\n".join(data_lines) + "\n\n"
                 return html
-            
+
             self.namespace['frame'] = frame
 
-            # Robust AST-based return transformation.
-            # We wrap the user code in a function and inject variable capture
-            # logic before any top-level return statements.
-            import ast
-
-            tree = ast.parse(code)
-
-            class ReturnTransformer(ast.NodeTransformer):
-                def __init__(self):
-                    self.depth = 0
-
-                def visit_FunctionDef(self, node):
-                    self.depth += 1
-                    res = self.generic_visit(node)
-                    self.depth -= 1
-                    return res
-
-                def visit_AsyncFunctionDef(self, node):
-                    self.depth += 1
-                    res = self.generic_visit(node)
-                    self.depth -= 1
-                    return res
-
-                def visit_ClassDef(self, node):
-                    self.depth += 1
-                    res = self.generic_visit(node)
-                    self.depth -= 1
-                    return res
-
-                def visit_Return(self, node):
-                    if self.depth == 0:
-                        # Top-level return (relative to our wrapper)
-                        # We need to insert __locals__.update(locals()) before this return
-                        capture_node = ast.Expr(
-                            value=ast.Call(
-                                func=ast.Attribute(
-                                    value=ast.Name(id='__locals__', ctx=ast.Load()),
-                                    attr='update',
-                                    ctx=ast.Load()
-                                ),
-                                args=[
-                                    ast.Call(
-                                        func=ast.Name(id='locals', ctx=ast.Load()),
-                                        args=[],
-                                        keywords=[]
-                                    )
-                                ],
-                                keywords=[]
-                            )
-                        )
-                        return [capture_node, node]
-                    return node
-
-            # Transform the body
-            transformer = ReturnTransformer()
-            new_body = []
-            for node in tree.body:
-                result = transformer.visit(node)
-                if isinstance(result, list):
-                    new_body.extend(result)
-                else:
-                    new_body.append(result)
-
-            # Add final capture at end of function
-            final_capture = ast.Expr(
-                value=ast.Call(
-                    func=ast.Attribute(
-                        value=ast.Name(id='__locals__', ctx=ast.Load()),
-                        attr='update',
-                        ctx=ast.Load()
-                    ),
-                    args=[
-                        ast.Call(
-                            func=ast.Name(id='locals', ctx=ast.Load()),
-                            args=[],
-                            keywords=[]
-                        )
-                    ],
-                    keywords=[]
-                )
-            )
-            new_body.append(final_capture)
-
-            # Wrap in function
-            wrapper = ast.FunctionDef(
-                name='__scribe_route_handler__',
-                args=ast.arguments(
-                    posonlyargs=[], args=[], vararg=None, kwonlyargs=[],
-                    kw_defaults=[], kwarg=None, defaults=[]
-                ),
-                body=new_body,
-                decorator_list=[],
-                returns=None
-            )
-
-            # Create module and compile
-            new_tree = ast.Module(body=[wrapper], type_ignores=[])
-            ast.fix_missing_locations(new_tree)
-            
             # Execute the function definition in the shared namespace
-            code_obj = compile(new_tree, filename="<template>", mode="exec")
             exec(code_obj, self.namespace)  # noqa: S102
 
             # Call the wrapper and capture any explicit return value.
