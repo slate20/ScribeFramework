@@ -11,7 +11,7 @@ import psycopg2
 import psycopg2.extras
 import psycopg2.extensions
 from typing import List, Optional, Dict, Any, Union
-from scribe.database.base import DatabaseAdapter, Row, ColumnInfo
+from scribe.database.base import DatabaseAdapter, Row, ColumnInfo, IndexInfo, ForeignKeyInfo
 
 logger = logging.getLogger(__name__)
 
@@ -381,36 +381,44 @@ class PostgreSQLAdapter(DatabaseAdapter):
         return schema, name
 
     def get_columns(self, table: str) -> List[ColumnInfo]:
-        """List a table's columns in declaration order."""
-        schema, name = self._split_table_name(table)
-        pk_rows = self.query("""
-            SELECT kcu.column_name
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-              ON tc.constraint_name = kcu.constraint_name
-             AND tc.table_schema = kcu.table_schema
-             AND tc.table_name = kcu.table_name
-            WHERE tc.constraint_type = 'PRIMARY KEY'
-              AND tc.table_schema = ? AND tc.table_name = ?
-        """, (schema, name))
-        primary_keys = {row['column_name'] for row in pk_rows}
+        """
+        List a table's columns in declaration order.
 
+        Types include length/precision ('character varying(255)', 'numeric(12,2)').
+        Identity columns and nextval() defaults are reported as autoincrement.
+        """
+        schema, name = self._split_table_name(table)
         rows = self.query("""
-            SELECT column_name, data_type, is_nullable, column_default
-            FROM information_schema.columns
-            WHERE table_schema = ? AND table_name = ?
-            ORDER BY ordinal_position
+            SELECT a.attname AS column_name,
+                   format_type(a.atttypid, a.atttypmod) AS data_type,
+                   NOT a.attnotnull AS is_nullable,
+                   pg_get_expr(d.adbin, d.adrelid) AS column_default,
+                   a.attidentity <> '' AS is_identity,
+                   EXISTS (
+                       SELECT 1 FROM pg_index ix
+                       WHERE ix.indrelid = t.oid AND ix.indisprimary AND a.attnum = ANY(ix.indkey)
+                   ) AS is_primary_key
+            FROM pg_attribute a
+            JOIN pg_class t ON t.oid = a.attrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+            WHERE n.nspname = ? AND t.relname = ? AND a.attnum > 0 AND NOT a.attisdropped
+            ORDER BY a.attnum
         """, (schema, name))
-        return [
-            ColumnInfo(
+
+        columns = []
+        for row in rows:
+            default = row['column_default']
+            autoincrement = bool(row['is_identity']) or bool(default and default.startswith('nextval('))
+            columns.append(ColumnInfo(
                 name=row['column_name'],
                 type=row['data_type'],
-                nullable=row['is_nullable'] == 'YES',
-                default=row['column_default'],
-                primary_key=row['column_name'] in primary_keys,
-            )
-            for row in rows
-        ]
+                nullable=bool(row['is_nullable']),
+                default=None if autoincrement else default,
+                primary_key=bool(row['is_primary_key']),
+                autoincrement=autoincrement,
+            ))
+        return columns
 
     def has_table(self, table: str) -> bool:
         """Check whether a table exists (unqualified names use the current schema)."""
@@ -420,3 +428,74 @@ class PostgreSQLAdapter(DatabaseAdapter):
             (schema, name)
         )
         return bool(rows)
+
+    def get_indexes(self, table: str) -> List[IndexInfo]:
+        """List a table's indexes, including those backing PRIMARY KEY and UNIQUE constraints."""
+        schema, name = self._split_table_name(table)
+        rows = self.query("""
+            SELECT ic.relname AS index_name,
+                   ix.indisunique AS is_unique,
+                   ix.indisprimary AS is_primary,
+                   EXISTS (
+                       SELECT 1 FROM pg_constraint c
+                       WHERE c.conindid = ix.indexrelid AND c.contype = 'u'
+                   ) AS is_unique_constraint,
+                   a.attname AS column_name
+            FROM pg_index ix
+            JOIN pg_class t ON t.oid = ix.indrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            JOIN pg_class ic ON ic.oid = ix.indexrelid
+            CROSS JOIN LATERAL unnest(ix.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord)
+            LEFT JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum AND k.attnum > 0
+            WHERE n.nspname = ? AND t.relname = ? AND k.ord <= ix.indnkeyatts
+            ORDER BY ic.relname, k.ord
+        """, (schema, name))
+
+        indexes = {}
+        for row in rows:
+            if row['index_name'] not in indexes:
+                if row['is_primary']:
+                    origin = 'primary_key'
+                elif row['is_unique_constraint']:
+                    origin = 'unique'
+                else:
+                    origin = 'index'
+                indexes[row['index_name']] = IndexInfo(
+                    name=row['index_name'], columns=[], unique=bool(row['is_unique']), origin=origin
+                )
+            indexes[row['index_name']].columns.append(row['column_name'])
+        return list(indexes.values())
+
+    def get_foreign_keys(self, table: str) -> List[ForeignKeyInfo]:
+        """List a table's foreign keys."""
+        schema, name = self._split_table_name(table)
+        rows = self.query("""
+            SELECT con.conname AS fk_name,
+                   a.attname AS column_name,
+                   rn.nspname AS ref_schema,
+                   rt.relname AS ref_table,
+                   ra.attname AS ref_column
+            FROM pg_constraint con
+            JOIN pg_class t ON t.oid = con.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            JOIN pg_class rt ON rt.oid = con.confrelid
+            JOIN pg_namespace rn ON rn.oid = rt.relnamespace
+            CROSS JOIN LATERAL unnest(con.conkey, con.confkey) WITH ORDINALITY AS k(attnum, ref_attnum, ord)
+            JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+            JOIN pg_attribute ra ON ra.attrelid = rt.oid AND ra.attnum = k.ref_attnum
+            WHERE con.contype = 'f' AND n.nspname = ? AND t.relname = ?
+            ORDER BY con.conname, k.ord
+        """, (schema, name))
+
+        foreign_keys = {}
+        for row in rows:
+            if row['fk_name'] not in foreign_keys:
+                ref_table = row['ref_table']
+                if row['ref_schema'] != schema:
+                    ref_table = f"{row['ref_schema']}.{ref_table}"
+                foreign_keys[row['fk_name']] = ForeignKeyInfo(
+                    columns=[], ref_table=ref_table, name=row['fk_name']
+                )
+            foreign_keys[row['fk_name']].columns.append(row['column_name'])
+            foreign_keys[row['fk_name']].ref_columns.append(row['ref_column'])
+        return list(foreign_keys.values())

@@ -5,7 +5,7 @@ Microsoft SQL Server database adapter implementation.
 import logging
 import pymssql
 from typing import List, Optional, Dict, Any, Union
-from scribe.database.base import DatabaseAdapter, Row, ColumnInfo
+from scribe.database.base import DatabaseAdapter, Row, ColumnInfo, IndexInfo, ForeignKeyInfo
 
 logger = logging.getLogger(__name__)
 
@@ -374,8 +374,10 @@ class MSSQLAdapter(DatabaseAdapter):
         """
         List a table's columns in declaration order.
 
-        Unqualified names match any schema, since get_tables() lists tables
-        from every schema without qualifying them.
+        Types include length/precision ('nvarchar(255)', 'nvarchar(max)', 'decimal(12,2)').
+        IDENTITY columns are reported as autoincrement. Unqualified names match
+        any schema, since get_tables() lists tables from every schema without
+        qualifying them.
         """
         schema, _, name = table.rpartition('.')
         schema_filter = "TABLE_SCHEMA = ?" if schema else "1 = 1"
@@ -394,7 +396,12 @@ class MSSQLAdapter(DatabaseAdapter):
         primary_keys = {row['COLUMN_NAME'] for row in pk_rows}
 
         rows = self.query(f"""
-            SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT
+            SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT,
+                   CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE,
+                   COLUMNPROPERTY(
+                       OBJECT_ID(QUOTENAME(TABLE_SCHEMA) + '.' + QUOTENAME(TABLE_NAME)),
+                       COLUMN_NAME, 'IsIdentity'
+                   ) AS IS_IDENTITY
             FROM INFORMATION_SCHEMA.COLUMNS
             WHERE {schema_filter} AND TABLE_NAME = ?
             ORDER BY ORDINAL_POSITION
@@ -402,13 +409,25 @@ class MSSQLAdapter(DatabaseAdapter):
         return [
             ColumnInfo(
                 name=row['COLUMN_NAME'],
-                type=row['DATA_TYPE'],
+                type=self._format_type(row),
                 nullable=row['IS_NULLABLE'] == 'YES',
                 default=row['COLUMN_DEFAULT'],
                 primary_key=row['COLUMN_NAME'] in primary_keys,
+                autoincrement=bool(row['IS_IDENTITY']),
             )
             for row in rows
         ]
+
+    @staticmethod
+    def _format_type(row) -> str:
+        """Build a type name with its length or precision from INFORMATION_SCHEMA.COLUMNS fields."""
+        data_type = row['DATA_TYPE']
+        if data_type in ('char', 'varchar', 'nchar', 'nvarchar', 'binary', 'varbinary'):
+            length = row['CHARACTER_MAXIMUM_LENGTH']
+            return f"{data_type}({'max' if length == -1 else length})"
+        if data_type in ('decimal', 'numeric'):
+            return f"{data_type}({row['NUMERIC_PRECISION']},{row['NUMERIC_SCALE']})"
+        return data_type
 
     def has_table(self, table: str) -> bool:
         """Check whether a table exists (unqualified names use the default schema)."""
@@ -420,3 +439,60 @@ class MSSQLAdapter(DatabaseAdapter):
             sql = "SELECT 1 AS found FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = SCHEMA_NAME() AND TABLE_NAME = ?"
             params = (name,)
         return bool(self.query(sql, params))
+
+    def get_indexes(self, table: str) -> List[IndexInfo]:
+        """List a table's indexes, including those backing PRIMARY KEY and UNIQUE constraints."""
+        rows = self.query("""
+            SELECT i.name AS index_name, i.is_unique, i.is_primary_key, i.is_unique_constraint,
+                   c.name AS column_name
+            FROM sys.indexes i
+            JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+            JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+            WHERE i.object_id = OBJECT_ID(?) AND i.name IS NOT NULL AND ic.is_included_column = 0
+            ORDER BY i.name, ic.key_ordinal
+        """, (table,))
+
+        indexes = {}
+        for row in rows:
+            if row['index_name'] not in indexes:
+                if row['is_primary_key']:
+                    origin = 'primary_key'
+                elif row['is_unique_constraint']:
+                    origin = 'unique'
+                else:
+                    origin = 'index'
+                indexes[row['index_name']] = IndexInfo(
+                    name=row['index_name'], columns=[], unique=bool(row['is_unique']), origin=origin
+                )
+            indexes[row['index_name']].columns.append(row['column_name'])
+        return list(indexes.values())
+
+    def get_foreign_keys(self, table: str) -> List[ForeignKeyInfo]:
+        """List a table's foreign keys."""
+        rows = self.query("""
+            SELECT fk.name AS fk_name,
+                   pc.name AS column_name,
+                   OBJECT_SCHEMA_NAME(fk.parent_object_id) AS table_schema,
+                   OBJECT_SCHEMA_NAME(fk.referenced_object_id) AS ref_schema,
+                   OBJECT_NAME(fk.referenced_object_id) AS ref_table,
+                   rc.name AS ref_column
+            FROM sys.foreign_keys fk
+            JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+            JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id
+            JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
+            WHERE fk.parent_object_id = OBJECT_ID(?)
+            ORDER BY fk.name, fkc.constraint_column_id
+        """, (table,))
+
+        foreign_keys = {}
+        for row in rows:
+            if row['fk_name'] not in foreign_keys:
+                ref_table = row['ref_table']
+                if row['ref_schema'] != row['table_schema']:
+                    ref_table = f"{row['ref_schema']}.{ref_table}"
+                foreign_keys[row['fk_name']] = ForeignKeyInfo(
+                    columns=[], ref_table=ref_table, name=row['fk_name']
+                )
+            foreign_keys[row['fk_name']].columns.append(row['column_name'])
+            foreign_keys[row['fk_name']].ref_columns.append(row['ref_column'])
+        return list(foreign_keys.values())

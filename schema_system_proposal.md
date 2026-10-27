@@ -1,6 +1,6 @@
 # Proposal: Hybrid Schema System for ScribeFramework
 
-**Status:** Draft (rev 2) — Phase 0 implemented  
+**Status:** Draft (rev 2) — Phases 0–1 implemented  
 **Author:** Matt Venhaus  
 **Date:** 2026-10-27
 
@@ -430,7 +430,7 @@ Existing SQLite apps use the full migrate-on-startup behavior.
 | `managed=True`  | Scribe diffs this table and generates migrations for it  |
 | `managed=False` | Table is visible / documentable but never migrated, and never reported as drift |
 
-Default on pull is `managed=False` so that connecting to a production database is safe by default.
+Default on pull is `managed=False` so that connecting to a production database is safe by default. Tables written by hand default to `managed=True` (omitting the argument), since generated changes are additive-only and a hand-written table is usually one Scribe should create; `pull` always writes `managed=False` explicitly.
 
 ## Rollout
 

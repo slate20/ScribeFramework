@@ -159,6 +159,10 @@ scribe db migrate                        # every connection with migrations enab
 
 Folders are never matched to connections by name, so a `migrations/analytics/` folder does nothing until `analytics` points to it. Two connections cannot share a folder.
 
+### Schema files
+
+To keep a readable description of each database's tables and compare it with the live database, see [Schema Files](06_SCHEMA_FILES.md).
+
 ### Startup flags
 
 `scribe dev`, `scribe ide`, and `scribe serve` accept `--migrate` / `--no-migrate` to override `auto_migrate` for every connection for one run.

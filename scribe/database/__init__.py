@@ -4,7 +4,7 @@ Database abstraction layer for ScribeEngine.
 Provides a unified interface across SQLite, PostgreSQL, and MSSQL.
 """
 
-from scribe.database.base import DatabaseAdapter, Row, ColumnInfo
+from scribe.database.base import DatabaseAdapter, Row, ColumnInfo, IndexInfo, ForeignKeyInfo
 from scribe.database.sqlite import SQLiteAdapter
 from scribe.database.query_builder import QueryBuilder
 from scribe.database.manager import DatabaseManager
@@ -52,6 +52,8 @@ __all__ = [
     "DatabaseAdapter",
     "Row",
     "ColumnInfo",
+    "IndexInfo",
+    "ForeignKeyInfo",
     "SQLiteAdapter",
     "QueryBuilder",
     "DatabaseManager",

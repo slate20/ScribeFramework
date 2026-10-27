@@ -3,7 +3,7 @@ Base database adapter interface and Row class.
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
 
@@ -12,14 +12,46 @@ class ColumnInfo:
     """
     Description of a table column, as reported by the database.
 
-    type is the database's own spelling (e.g. 'INTEGER' on SQLite,
-    'integer' on PostgreSQL), and default is the raw default expression.
+    type is the database's own spelling, including length/precision
+    (e.g. 'INTEGER' on SQLite, 'character varying(255)' on PostgreSQL),
+    and default is the raw default expression. Sequence/identity defaults
+    are reported as autoincrement=True with default=None.
     """
     name: str
     type: str
     nullable: bool = True
     default: Optional[str] = None
     primary_key: bool = False
+    autoincrement: bool = False
+
+
+@dataclass
+class IndexInfo:
+    """
+    Description of an index, as reported by the database.
+
+    origin is 'index' for CREATE INDEX, 'unique' for an index backing a
+    UNIQUE constraint, and 'primary_key' for the primary key's index.
+    A column entry is None for an expression in an expression index.
+    """
+    name: str
+    columns: List[Optional[str]]
+    unique: bool = False
+    origin: str = 'index'
+
+
+@dataclass
+class ForeignKeyInfo:
+    """
+    Description of a foreign key, as reported by the database.
+
+    ref_table is schema-qualified only when it lives in a different
+    schema than the table the key belongs to.
+    """
+    columns: List[str]
+    ref_table: str
+    ref_columns: List[str] = field(default_factory=list)
+    name: Optional[str] = None
 
 
 class Row:
@@ -267,6 +299,14 @@ class DatabaseAdapter(ABC):
 
         Unqualified names on PostgreSQL are looked up in the current schema.
         """
+        raise NotImplementedError(f"Introspection is not supported for '{self.dialect}' databases")
+
+    def get_indexes(self, table: str) -> List[IndexInfo]:
+        """List a table's indexes, including those backing primary key and UNIQUE constraints."""
+        raise NotImplementedError(f"Introspection is not supported for '{self.dialect}' databases")
+
+    def get_foreign_keys(self, table: str) -> List[ForeignKeyInfo]:
+        """List a table's foreign keys."""
         raise NotImplementedError(f"Introspection is not supported for '{self.dialect}' databases")
 
     # === Query Builder ===
