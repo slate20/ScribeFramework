@@ -299,65 +299,16 @@ def get_database_tables(connection_name):
             return jsonify({'tables': [], 'error': f'Connection "{connection_name}" not found'}), 404
 
         db = db_manager[connection_name]
-        db_type = db.config.get('type', 'sqlite').lower()
 
-        if db_type == 'sqlite':
-            rows = db.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-            tables = [row['name'] for row in rows]
-        elif db_type == 'postgresql':
-            rows = db.query("""
-                SELECT table_schema, table_name
-                FROM information_schema.tables
-                WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-                ORDER BY table_schema, table_name
-            """)
-            tables = [f"{row['table_schema']}.{row['table_name']}" for row in rows]
-        elif db_type == 'mssql':
-            rows = db.query("""
-                SELECT TABLE_NAME
-                FROM INFORMATION_SCHEMA.TABLES
-                WHERE TABLE_TYPE = 'BASE TABLE'
-                ORDER BY TABLE_NAME
-            """)
-            tables = [row['TABLE_NAME'] for row in rows]
-        else:
-            return jsonify({'tables': [], 'error': f'Database type {db_type} not supported yet'}), 500
+        try:
+            tables = db.get_tables()
+        except NotImplementedError:
+            return jsonify({'tables': [], 'error': f'Database type {db.dialect} not supported yet'}), 500
 
         return jsonify({'tables': tables})
 
     except Exception as e:
         return jsonify({'tables': [], 'error': str(e)}), 500
-
-
-def _get_table_columns(db, db_type, table_name):
-    """Get ordered column names for a table via schema queries (used when table is empty)."""
-    if db_type == 'sqlite':
-        rows = db.query(f"PRAGMA table_info({table_name})")
-        return [row['name'] for row in rows]
-    elif db_type == 'postgresql':
-        parts = table_name.split('.', 1)
-        if len(parts) == 2:
-            rows = db.query(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema = ? AND table_name = ? ORDER BY ordinal_position",
-                (parts[0], parts[1])
-            )
-        else:
-            rows = db.query(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_name = ? "
-                "ORDER BY ordinal_position",
-                (table_name,)
-            )
-        return [row['column_name'] for row in rows]
-    elif db_type == 'mssql':
-        rows = db.query(
-            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
-            "WHERE TABLE_NAME = ? ORDER BY ORDINAL_POSITION",
-            (table_name,)
-        )
-        return [row['COLUMN_NAME'] for row in rows]
-    return []
 
 
 def _serialize_value(v):
@@ -414,7 +365,7 @@ def get_table_data(connection_name, table_name):
         if rows:
             columns = list(rows[0].keys())
         else:
-            columns = _get_table_columns(db, db_type, table_name)
+            columns = [column.name for column in db.get_columns(table_name)]
 
         if not columns:
             return jsonify({'error': 'Table not found'}), 404

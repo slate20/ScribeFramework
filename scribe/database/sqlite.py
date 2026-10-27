@@ -4,7 +4,7 @@ SQLite database adapter implementation.
 
 import sqlite3
 from typing import List, Optional, Dict, Any, Union
-from scribe.database.base import DatabaseAdapter, Row
+from scribe.database.base import DatabaseAdapter, Row, ColumnInfo
 
 
 class SQLiteAdapter(DatabaseAdapter):
@@ -244,3 +244,29 @@ class SQLiteAdapter(DatabaseAdapter):
         sql = f"DELETE FROM {table} WHERE {where_clause}"
 
         return self.execute(sql, tuple(params))
+
+    # === Introspection ===
+
+    def get_tables(self) -> List[str]:
+        """List tables in the database, sorted by name."""
+        rows = self.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        return [row['name'] for row in rows]
+
+    def get_columns(self, table: str) -> List[ColumnInfo]:
+        """List a table's columns in declaration order."""
+        rows = self.query("SELECT * FROM pragma_table_info(?)", (table,))
+        return [
+            ColumnInfo(
+                name=row['name'],
+                type=row['type'],
+                nullable=not row['notnull'],
+                default=row['dflt_value'],
+                primary_key=bool(row['pk']),
+            )
+            for row in rows
+        ]
+
+    def has_table(self, table: str) -> bool:
+        """Check whether a table exists."""
+        rows = self.query("SELECT 1 AS found FROM sqlite_master WHERE type='table' AND name = ?", (table,))
+        return bool(rows)

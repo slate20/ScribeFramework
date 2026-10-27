@@ -11,7 +11,7 @@ import psycopg2
 import psycopg2.extras
 import psycopg2.extensions
 from typing import List, Optional, Dict, Any, Union
-from scribe.database.base import DatabaseAdapter, Row
+from scribe.database.base import DatabaseAdapter, Row, ColumnInfo
 
 logger = logging.getLogger(__name__)
 
@@ -358,3 +358,65 @@ class PostgreSQLAdapter(DatabaseAdapter):
                 cursor.close()
 
         return self._execute_with_retry(_run)
+
+    # ------------------------------------------------------------------ #
+    #  Introspection                                                       #
+    # ------------------------------------------------------------------ #
+
+    def get_tables(self) -> List[str]:
+        """List tables as 'schema.table', excluding system schemas."""
+        rows = self.query("""
+            SELECT table_schema, table_name
+            FROM information_schema.tables
+            WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+            ORDER BY table_schema, table_name
+        """)
+        return [f"{row['table_schema']}.{row['table_name']}" for row in rows]
+
+    def _split_table_name(self, table: str):
+        """Split 'schema.table' into (schema, table); unqualified names use the current schema."""
+        schema, _, name = table.rpartition('.')
+        if not schema:
+            schema = self.query("SELECT current_schema() AS schema")[0]['schema']
+        return schema, name
+
+    def get_columns(self, table: str) -> List[ColumnInfo]:
+        """List a table's columns in declaration order."""
+        schema, name = self._split_table_name(table)
+        pk_rows = self.query("""
+            SELECT kcu.column_name
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+              ON tc.constraint_name = kcu.constraint_name
+             AND tc.table_schema = kcu.table_schema
+             AND tc.table_name = kcu.table_name
+            WHERE tc.constraint_type = 'PRIMARY KEY'
+              AND tc.table_schema = ? AND tc.table_name = ?
+        """, (schema, name))
+        primary_keys = {row['column_name'] for row in pk_rows}
+
+        rows = self.query("""
+            SELECT column_name, data_type, is_nullable, column_default
+            FROM information_schema.columns
+            WHERE table_schema = ? AND table_name = ?
+            ORDER BY ordinal_position
+        """, (schema, name))
+        return [
+            ColumnInfo(
+                name=row['column_name'],
+                type=row['data_type'],
+                nullable=row['is_nullable'] == 'YES',
+                default=row['column_default'],
+                primary_key=row['column_name'] in primary_keys,
+            )
+            for row in rows
+        ]
+
+    def has_table(self, table: str) -> bool:
+        """Check whether a table exists (unqualified names use the current schema)."""
+        schema, name = self._split_table_name(table)
+        rows = self.query(
+            "SELECT 1 AS found FROM information_schema.tables WHERE table_schema = ? AND table_name = ?",
+            (schema, name)
+        )
+        return bool(rows)

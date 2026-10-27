@@ -3,7 +3,23 @@ Base database adapter interface and Row class.
 """
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
+
+
+@dataclass
+class ColumnInfo:
+    """
+    Description of a table column, as reported by the database.
+
+    type is the database's own spelling (e.g. 'INTEGER' on SQLite,
+    'integer' on PostgreSQL), and default is the raw default expression.
+    """
+    name: str
+    type: str
+    nullable: bool = True
+    default: Optional[str] = None
+    primary_key: bool = False
 
 
 class Row:
@@ -69,7 +85,7 @@ class DatabaseAdapter(ABC):
     """
     Abstract base class for database adapters.
 
-    All database implementations (SQLite, PostgreSQL, MySQL, MSSQL)
+    All database implementations (SQLite, PostgreSQL, MSSQL)
     inherit from this class and implement its methods.
     """
 
@@ -217,6 +233,41 @@ class DatabaseAdapter(ABC):
             db.delete('users', id=user_id)
         """
         pass
+
+    # === Introspection ===
+
+    @property
+    def dialect(self) -> str:
+        """Database type from config: 'sqlite', 'postgresql', or 'mssql'"""
+        return self.config.get('type', 'sqlite').lower()
+
+    def get_tables(self) -> List[str]:
+        """
+        List tables in the database, sorted by name.
+
+        PostgreSQL names are schema-qualified ('public.users').
+        """
+        raise NotImplementedError(f"Introspection is not supported for '{self.dialect}' databases")
+
+    def get_columns(self, table: str) -> List[ColumnInfo]:
+        """
+        List a table's columns in declaration order.
+
+        Args:
+            table: Table name (PostgreSQL also accepts 'schema.table')
+
+        Returns:
+            List of ColumnInfo, empty if the table does not exist
+        """
+        raise NotImplementedError(f"Introspection is not supported for '{self.dialect}' databases")
+
+    def has_table(self, table: str) -> bool:
+        """
+        Check whether a table exists.
+
+        Unqualified names on PostgreSQL are looked up in the current schema.
+        """
+        raise NotImplementedError(f"Introspection is not supported for '{self.dialect}' databases")
 
     # === Query Builder ===
 

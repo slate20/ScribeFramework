@@ -20,6 +20,7 @@ from jinja2 import Template
 
 from scribe.parser import TemplateParser
 from scribe.database import create_adapter, DatabaseManager
+from scribe.migrations.config import get_databases_config
 from scribe.execution import ExecutionContext
 from scribe.loader import load_helper_modules
 from scribe.helpers import response, forms, auth
@@ -252,13 +253,8 @@ def create_app(
     configure_auth(app, app_config.get('auth', {}))
 
     # Create database manager (supports multiple named connections)
-    # Handle both old 'database' key and new 'databases' key
-    if 'databases' not in app_config and 'database' in app_config:
-        # Old format: convert to new format
-        app_config['databases'] = {'default': app_config['database']}
-    elif 'databases' not in app_config:
-        # No database config at all: use SQLite default
-        app_config['databases'] = {'default': {'type': 'sqlite', 'database': 'app.db'}}
+    # Handles both the old 'database' key and the new 'databases' key
+    app_config['databases'] = get_databases_config(app_config)
 
     db = DatabaseManager(app_config)
 
@@ -330,10 +326,7 @@ def create_standalone_gui_app(project_path: str = '.', config: Optional[Dict[str
     configure_auth(app, app_config.get('auth', {}))
 
     # Create database manager (GUI needs this for database browser)
-    if 'databases' not in app_config and 'database' in app_config:
-        app_config['databases'] = {'default': app_config['database']}
-    elif 'databases' not in app_config:
-        app_config['databases'] = {'default': {'type': 'sqlite', 'database': 'app.db'}}
+    app_config['databases'] = get_databases_config(app_config)
 
     db = DatabaseManager(app_config)
     app.config['DB'] = db

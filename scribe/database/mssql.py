@@ -5,7 +5,7 @@ Microsoft SQL Server database adapter implementation.
 import logging
 import pymssql
 from typing import List, Optional, Dict, Any, Union
-from scribe.database.base import DatabaseAdapter, Row
+from scribe.database.base import DatabaseAdapter, Row, ColumnInfo
 
 logger = logging.getLogger(__name__)
 
@@ -357,3 +357,66 @@ class MSSQLAdapter(DatabaseAdapter):
             return cursor.rowcount
         finally:
             cursor.close()
+
+    # === Introspection ===
+
+    def get_tables(self) -> List[str]:
+        """List base tables in the database, sorted by name."""
+        rows = self.query("""
+            SELECT TABLE_NAME
+            FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_TYPE = 'BASE TABLE'
+            ORDER BY TABLE_NAME
+        """)
+        return [row['TABLE_NAME'] for row in rows]
+
+    def get_columns(self, table: str) -> List[ColumnInfo]:
+        """
+        List a table's columns in declaration order.
+
+        Unqualified names match any schema, since get_tables() lists tables
+        from every schema without qualifying them.
+        """
+        schema, _, name = table.rpartition('.')
+        schema_filter = "TABLE_SCHEMA = ?" if schema else "1 = 1"
+        schema_params = (schema,) if schema else ()
+
+        pk_rows = self.query(f"""
+            SELECT kcu.COLUMN_NAME
+            FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+            JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+              ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+             AND tc.TABLE_SCHEMA = kcu.TABLE_SCHEMA
+             AND tc.TABLE_NAME = kcu.TABLE_NAME
+            WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+              AND tc.{schema_filter} AND tc.TABLE_NAME = ?
+        """, schema_params + (name,))
+        primary_keys = {row['COLUMN_NAME'] for row in pk_rows}
+
+        rows = self.query(f"""
+            SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE {schema_filter} AND TABLE_NAME = ?
+            ORDER BY ORDINAL_POSITION
+        """, schema_params + (name,))
+        return [
+            ColumnInfo(
+                name=row['COLUMN_NAME'],
+                type=row['DATA_TYPE'],
+                nullable=row['IS_NULLABLE'] == 'YES',
+                default=row['COLUMN_DEFAULT'],
+                primary_key=row['COLUMN_NAME'] in primary_keys,
+            )
+            for row in rows
+        ]
+
+    def has_table(self, table: str) -> bool:
+        """Check whether a table exists (unqualified names use the default schema)."""
+        schema, _, name = table.rpartition('.')
+        if schema:
+            sql = "SELECT 1 AS found FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"
+            params = (schema, name)
+        else:
+            sql = "SELECT 1 AS found FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = SCHEMA_NAME() AND TABLE_NAME = ?"
+            params = (name,)
+        return bool(self.query(sql, params))

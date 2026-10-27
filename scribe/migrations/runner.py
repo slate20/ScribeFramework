@@ -6,17 +6,49 @@ Migrations are SQL files in the migrations/ directory, executed in order.
 
 import os
 import glob
-from typing import List, Union
+from typing import List, Optional, Union
 from scribe.database.base import DatabaseAdapter
 
 
-def run_migrations(db: Union[DatabaseAdapter, 'DatabaseManager'], project_path: str):
+# Tracking table DDL per dialect. Existence is checked with has_table() first,
+# since MSSQL has no CREATE TABLE IF NOT EXISTS.
+_MIGRATIONS_TABLE_DDL = {
+    'sqlite': """
+        CREATE TABLE _migrations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT UNIQUE NOT NULL,
+            applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """,
+    'postgresql': """
+        CREATE TABLE _migrations (
+            id SERIAL PRIMARY KEY,
+            filename VARCHAR(255) UNIQUE NOT NULL,
+            applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """,
+    'mssql': """
+        CREATE TABLE _migrations (
+            id INT IDENTITY(1,1) PRIMARY KEY,
+            filename NVARCHAR(255) UNIQUE NOT NULL,
+            applied_at DATETIME2 DEFAULT CURRENT_TIMESTAMP
+        )
+    """,
+}
+
+
+def run_migrations(db: Union[DatabaseAdapter, 'DatabaseManager'], project_path: str,
+                   migrations_path: Optional[str] = None) -> int:
     """
     Run all pending database migrations.
 
     Args:
         db: DatabaseAdapter or DatabaseManager instance
         project_path: Path to the project directory
+        migrations_path: Folder holding the .sql files (default: <project_path>/migrations)
+
+    Returns:
+        Number of migrations applied
 
     Note:
         If a DatabaseManager is passed, migrations run on the 'default' connection.
@@ -44,29 +76,27 @@ def run_migrations(db: Union[DatabaseAdapter, 'DatabaseManager'], project_path: 
     if isinstance(db, DatabaseManager):
         if 'default' not in db:
             print("Warning: No 'default' database connection found. Skipping migrations.")
-            return
+            return 0
         db = db['default']
 
-    migrations_path = os.path.join(project_path, 'migrations')
+    if migrations_path is None:
+        migrations_path = os.path.join(project_path, 'migrations')
 
-    # If migrations/ directory doesn't exist, nothing to do
-    if not os.path.exists(migrations_path):
-        print("No migrations/ directory found")
-        return
+    # If the migrations folder doesn't exist, nothing to do
+    if not os.path.isdir(migrations_path):
+        print(f"No migrations folder found at {os.path.relpath(migrations_path, project_path)}/")
+        return 0
+
+    migration_files = _list_migration_files(migrations_path)
+    if not migration_files:
+        print("No migration files found")
+        return 0
 
     # Create migrations tracking table if it doesn't exist
     _create_migrations_table(db)
 
-    # Get list of migration files
-    migration_files = glob.glob(os.path.join(migrations_path, '*.sql'))
-    migration_files.sort()  # Execute in alphabetical order
-
-    if not migration_files:
-        print("No migration files found")
-        return
-
     # Get list of already-applied migrations
-    applied_migrations = _get_applied_migrations(db)
+    applied_migrations = set(get_applied_migrations(db))
 
     # Run each migration
     applied_count = 0
@@ -111,28 +141,62 @@ def run_migrations(db: Union[DatabaseAdapter, 'DatabaseManager'], project_path: 
     else:
         print("\n✓ All migrations up to date")
 
+    return applied_count
+
+
+def get_pending_migrations(db: DatabaseAdapter, migrations_path: str) -> List[str]:
+    """
+    List migration filenames that have not been applied yet.
+
+    Read-only: if the _migrations table doesn't exist, every file is pending
+    and the table is not created.
+
+    Args:
+        db: DatabaseAdapter for the connection
+        migrations_path: Folder holding the .sql files
+
+    Returns:
+        Pending filenames in the order they would run
+    """
+    if not os.path.isdir(migrations_path):
+        return []
+
+    applied = set(get_applied_migrations(db))
+    return [
+        os.path.basename(filepath)
+        for filepath in _list_migration_files(migrations_path)
+        if os.path.basename(filepath) not in applied
+    ]
+
+
+def get_applied_migrations(db: DatabaseAdapter) -> List[str]:
+    """
+    Get applied migration filenames, oldest first.
+
+    Returns an empty list if the _migrations table doesn't exist yet.
+    """
+    if not db.has_table('_migrations'):
+        return []
+    results = db.query("SELECT filename FROM _migrations ORDER BY applied_at, id")
+    return [row['filename'] for row in results]
+
+
+def _list_migration_files(migrations_path: str) -> List[str]:
+    """Get .sql files directly inside the folder, in execution (alphabetical) order."""
+    return sorted(glob.glob(os.path.join(migrations_path, '*.sql')))
+
 
 def _create_migrations_table(db: DatabaseAdapter):
     """Create the _migrations table to track applied migrations."""
-    sql = """
-    CREATE TABLE IF NOT EXISTS _migrations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        filename TEXT UNIQUE NOT NULL,
-        applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-    """
-    db.execute(sql)
+    if db.has_table('_migrations'):
+        return
+
+    ddl = _MIGRATIONS_TABLE_DDL.get(db.dialect)
+    if ddl is None:
+        raise ValueError(f"Migrations are not supported for '{db.dialect}' databases")
+
+    db.execute(ddl)
     db.commit()
-
-
-def _get_applied_migrations(db: DatabaseAdapter) -> List[str]:
-    """Get list of already-applied migration filenames."""
-    try:
-        results = db.query("SELECT filename FROM _migrations ORDER BY applied_at")
-        return [row['filename'] for row in results]
-    except:
-        # Table might not exist yet
-        return []
 
 
 def _record_migration(db: DatabaseAdapter, filename: str):
@@ -178,13 +242,14 @@ def _split_sql_statements(sql: str) -> List[str]:
     return statements
 
 
-def create_migration(project_path: str, name: str) -> str:
+def create_migration(project_path: str, name: str, migrations_path: Optional[str] = None) -> str:
     """
     Create a new migration file.
 
     Args:
         project_path: Project directory path
         name: Migration name (e.g., "create_users")
+        migrations_path: Folder to create it in (default: <project_path>/migrations)
 
     Returns:
         Path to the created migration file
@@ -195,9 +260,10 @@ def create_migration(project_path: str, name: str) -> str:
     """
     import datetime
 
-    migrations_path = os.path.join(project_path, 'migrations')
+    if migrations_path is None:
+        migrations_path = os.path.join(project_path, 'migrations')
 
-    # Create migrations/ directory if it doesn't exist
+    # Create the migrations folder if it doesn't exist
     os.makedirs(migrations_path, exist_ok=True)
 
     # Get next migration number

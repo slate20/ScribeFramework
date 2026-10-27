@@ -5,12 +5,109 @@ Provides commands:
     scribe new <project>    - Create new project
     scribe dev              - Run development server
     scribe db migrate       - Run database migrations
+    scribe db status        - Show applied and pending migrations
 """
 
 import click
 import os
 import shutil
+import sys
 from pathlib import Path
+
+
+def _run_startup_migrations(db, path, migrate):
+    """
+    Apply or report pending migrations for each connection on dev/ide/serve startup.
+
+    Args:
+        db: The app's DatabaseManager
+        path: Project directory
+        migrate: --migrate/--no-migrate override; None uses each connection's auto_migrate
+
+    Returns:
+        Migration folders of the connections that auto-migrated, for the reloader to watch
+    """
+    from scribe.migrations import (
+        get_migration_targets, get_pending_migrations, run_migrations, MigrationConfigError
+    )
+
+    try:
+        targets = get_migration_targets({name: adapter.config for name, adapter in db.items()}, path)
+    except MigrationConfigError as e:
+        raise click.ClickException(str(e))
+
+    watched = []
+    for target in targets:
+        adapter = db[target.name]
+        folder = os.path.relpath(target.path, path)
+        auto_migrate = target.auto_migrate if migrate is None else migrate
+
+        if not auto_migrate:
+            try:
+                pending = get_pending_migrations(adapter, target.path)
+            except Exception as e:
+                adapter.rollback()
+                click.echo(f"\n⚠ Could not check migrations for '{target.name}': {e}")
+                continue
+            if pending:
+                click.echo(
+                    f"\n⚠ {len(pending)} pending migration(s) for '{target.name}' "
+                    f"— run 'scribe db migrate --database {target.name}'"
+                )
+            continue
+
+        # A non-SQLite connection auto-migrating only because the key is missing usually
+        # means a SQLite block was replaced without revisiting its migration settings.
+        if migrate is None and target.auto_migrate_implicit and target.dialect != 'sqlite':
+            pending = get_pending_migrations(adapter, target.path)
+            if pending:
+                click.echo(
+                    f"\n⚠ '{target.name}' ({target.dialect}) has no 'auto_migrate' setting, so its "
+                    f"{len(pending)} pending migration(s) in {folder}/ will run now.\n"
+                    f"  Set \"auto_migrate\" (and \"migrations\") explicitly in its scribe.json block "
+                    f"to control this."
+                )
+
+        click.echo(f"\nApplying database migrations for '{target.name}' ({folder}/)...")
+        run_migrations(adapter, path, target.path)
+        watched.append(target.path)
+
+    return watched
+
+
+def _resolve_migration_targets(path, database=None):
+    """
+    Load scribe.json and get the connections that `scribe db` commands should act on.
+
+    Returns:
+        (databases config, targets) — targets is narrowed to `database` when given
+    """
+    from scribe.app import load_config
+    from scribe.migrations import get_databases_config, get_migration_targets, MigrationConfigError
+
+    databases = get_databases_config(load_config(path))
+    try:
+        targets = get_migration_targets(databases, path)
+    except MigrationConfigError as e:
+        raise click.ClickException(str(e))
+
+    if database is None:
+        return databases, targets
+
+    if database not in databases:
+        available = ', '.join(f"'{name}'" for name in databases)
+        raise click.ClickException(
+            f"Database connection '{database}' not found in scribe.json. Available: {available}"
+        )
+    targets = [target for target in targets if target.name == database]
+    if not targets:
+        folder = 'migrations' if database == 'default' else f'migrations/{database}'
+        raise click.ClickException(
+            f"Migrations are not enabled for '{database}'. To enable them, add\n"
+            f"  \"migrations\": \"{folder}\"\n"
+            f"to its block in scribe.json."
+        )
+    return databases, targets
 
 
 @click.group()
@@ -53,7 +150,9 @@ def new(project_name, path):
   "databases": {
     "default": {
       "type": "sqlite",
-      "database": "app.db"
+      "database": "app.db",
+      "migrations": "migrations",
+      "auto_migrate": true
     }
   },
   "SECRET_KEY": "CHANGE_THIS_TO_A_RANDOM_SECRET_KEY_IN_PRODUCTION"
@@ -1068,8 +1167,10 @@ scribe.json  # May contain secrets
 @click.option('--port', default=5000, type=int, help='Port to bind to')
 @click.option('--debug/--no-debug', default=True, help='Enable debug mode')
 @click.option('--no-reload', is_flag=True, help='Disable auto-reload on file changes')
+@click.option('--migrate/--no-migrate', default=None,
+              help="Apply pending migrations on startup (overrides each connection's auto_migrate)")
 @click.option('--path', default='.', help='Project directory')
-def dev(host, port, debug, no_reload, path):
+def dev(host, port, debug, no_reload, migrate, path):
     """
     Run development server for your ScribeFramework application.
 
@@ -1078,11 +1179,11 @@ def dev(host, port, debug, no_reload, path):
         scribe dev --port 3000        # Custom port
         scribe dev --no-reload        # Disable auto-reload
         scribe dev --host 0.0.0.0     # Allow external connections
+        scribe dev --no-migrate       # Skip applying migrations this run
 
     To use the IDE, run 'scribe ide' in a separate terminal.
     """
     from scribe.app import create_app
-    from scribe.migrations import run_migrations
     import glob
 
     click.echo(f"Starting ScribeFramework development server...")
@@ -1091,10 +1192,8 @@ def dev(host, port, debug, no_reload, path):
     # Create app
     app = create_app(path)
 
-    # Run migrations
-    click.echo("\nApplying database migrations...")
-    db = app.config['DB']
-    run_migrations(db, path)
+    # Apply (or report) pending migrations
+    migration_folders = _run_startup_migrations(app.config['DB'], path, migrate)
 
     # Configure auto-reload to watch project files
     extra_files = []
@@ -1105,8 +1204,9 @@ def dev(host, port, debug, no_reload, path):
         extra_files.extend(glob.glob(os.path.join(path, '**/*.stpl'), recursive=True))
         # Watch lib/ Python files
         extra_files.extend(glob.glob(os.path.join(path, 'lib/**/*.py'), recursive=True))
-        # Watch migrations
-        extra_files.extend(glob.glob(os.path.join(path, 'migrations/**/*.sql'), recursive=True))
+        # Watch migrations of connections that apply them on startup
+        for folder in migration_folders:
+            extra_files.extend(glob.glob(os.path.join(folder, '*.sql')))
         # Watch config
         config_file = os.path.join(path, 'scribe.json')
         if os.path.exists(config_file):
@@ -1136,8 +1236,10 @@ def dev(host, port, debug, no_reload, path):
 @click.option('--app-port', default=5000, type=int, help='Port where app server is running (for preview)')
 @click.option('--debug/--no-debug', default=True, help='Enable debug mode')
 @click.option('--no-reload', is_flag=True, help='Disable auto-reload on file changes')
+@click.option('--migrate/--no-migrate', default=None,
+              help="Apply pending migrations on startup (overrides each connection's auto_migrate)")
 @click.option('--path', default='.', help='Project directory')
-def ide(host, port, app_port, debug, no_reload, path):
+def ide(host, port, app_port, debug, no_reload, migrate, path):
     """
     Run the ScribeFramework IDE (web-based code editor).
 
@@ -1157,7 +1259,6 @@ def ide(host, port, app_port, debug, no_reload, path):
     Note: Run 'scribe dev' in a separate terminal to start your app server.
     """
     from scribe.app import create_standalone_gui_app
-    from scribe.migrations import run_migrations
     import glob
 
     # Security warning if not localhost
@@ -1175,10 +1276,8 @@ def ide(host, port, app_port, debug, no_reload, path):
     # Configure app server port for preview
     gui_app.config['APP_SERVER_PORT'] = app_port
 
-    # Run migrations (so database browser works)
-    click.echo("\nApplying database migrations...")
-    db = gui_app.config['DB']
-    run_migrations(db, path)
+    # Apply (or report) pending migrations, so the database browser is current
+    migration_folders = _run_startup_migrations(gui_app.config['DB'], path, migrate)
 
     # Configure auto-reload to watch project files
     extra_files = []
@@ -1189,8 +1288,9 @@ def ide(host, port, app_port, debug, no_reload, path):
         extra_files.extend(glob.glob(os.path.join(path, '**/*.stpl'), recursive=True))
         # Watch lib/ Python files
         extra_files.extend(glob.glob(os.path.join(path, 'lib/**/*.py'), recursive=True))
-        # Watch migrations
-        extra_files.extend(glob.glob(os.path.join(path, 'migrations/**/*.sql'), recursive=True))
+        # Watch migrations of connections that apply them on startup
+        for folder in migration_folders:
+            extra_files.extend(glob.glob(os.path.join(folder, '*.sql')))
         # Watch config
         config_file = os.path.join(path, 'scribe.json')
         if os.path.exists(config_file):
@@ -1219,8 +1319,10 @@ def ide(host, port, app_port, debug, no_reload, path):
 @click.option('--host', default='0.0.0.0', help='Host to bind to')
 @click.option('--port', default=8000, type=int, help='Port to bind to')
 @click.option('--threads', default=4, type=int, help='Number of threads')
+@click.option('--migrate/--no-migrate', default=None,
+              help="Apply pending migrations on startup (overrides each connection's auto_migrate)")
 @click.option('--path', default='.', help='Project directory')
-def serve(host, port, threads, path):
+def serve(host, port, threads, migrate, path):
     """
     Run production server using Waitress.
 
@@ -1231,9 +1333,9 @@ def serve(host, port, threads, path):
         scribe serve
         scribe serve --host 0.0.0.0 --port 8000
         scribe serve --threads 8
+        scribe serve --no-migrate     # Run 'scribe db migrate' as a separate deploy step
     """
     from scribe.app import create_app
-    from scribe.migrations import run_migrations
     from waitress import serve as waitress_serve
 
     click.echo(f"Starting ScribeFramework production server...")
@@ -1242,10 +1344,8 @@ def serve(host, port, threads, path):
     # Create Flask app (production mode)
     app = create_app(path)
 
-    # Run migrations
-    click.echo("\nApplying database migrations...")
-    db = app.config['DB']
-    run_migrations(db, path)
+    # Apply (or report) pending migrations
+    _run_startup_migrations(app.config['DB'], path, migrate)
 
     # Start server
     click.echo(f"\n✓ Production server running at http://{host}:{port}")
@@ -1264,48 +1364,120 @@ def db_commands():
 
 
 @db_commands.command()
+@click.option('--database', default=None,
+              help='Connection name (default: every connection with migrations enabled)')
 @click.option('--path', default='.', help='Project directory')
-def migrate(path):
+def migrate(database, path):
     """
     Run database migrations.
 
     Example:
-        scribe db migrate
+        scribe db migrate                       # All connections with migrations enabled
+        scribe db migrate --database analytics  # One connection
     """
-    from scribe.app import load_config
     from scribe.database import create_adapter
     from scribe.migrations import run_migrations
 
-    click.echo("Running database migrations...")
+    databases, targets = _resolve_migration_targets(path, database)
+    if not targets:
+        click.echo("No database connections have migrations enabled.")
+        return
 
-    # Load config
-    config = load_config(path)
+    for target in targets:
+        click.echo(f"Running migrations for '{target.name}' ({os.path.relpath(target.path, path)}/)...")
+        db = create_adapter(databases[target.name])
+        try:
+            run_migrations(db, path, target.path)
+        except Exception:
+            # run_migrations already reported which file failed
+            sys.exit(1)
+        finally:
+            db.close()
+        click.echo()
 
-    # Create database adapter
-    db = create_adapter(config.get('database', {'type': 'sqlite', 'database': 'app.db'}))
 
-    # Run migrations
-    run_migrations(db, path)
+@db_commands.command()
+@click.option('--database', default=None,
+              help='Connection name (default: every connection in scribe.json)')
+@click.option('--path', default='.', help='Project directory')
+def status(database, path):
+    """
+    Show applied and pending migrations for each connection (read-only).
 
-    db.close()
+    Example:
+        scribe db status
+        scribe db status --database analytics
+    """
+    from scribe.database import create_adapter
+    from scribe.migrations import get_applied_migrations, get_pending_migrations
+
+    databases, targets = _resolve_migration_targets(path)
+    if database is not None and database not in databases:
+        available = ', '.join(f"'{name}'" for name in databases)
+        raise click.ClickException(
+            f"Database connection '{database}' not found in scribe.json. Available: {available}"
+        )
+    targets_by_name = {target.name: target for target in targets}
+    names = [database] if database else list(databases)
+
+    for name in names:
+        target = targets_by_name.get(name)
+        if target is None:
+            click.echo(f"{name}: migrations disabled\n")
+            continue
+
+        auto = 'on' if target.auto_migrate else 'off'
+        if target.auto_migrate_implicit:
+            auto += ' (default)'
+        click.echo(f"{name}: {os.path.relpath(target.path, path)}/  auto_migrate: {auto}")
+
+        if not os.path.isdir(target.path):
+            click.echo("  (folder does not exist)\n")
+            continue
+
+        db = create_adapter(databases[name])
+        try:
+            applied = get_applied_migrations(db)
+            pending = get_pending_migrations(db, target.path)
+        except Exception as e:
+            click.echo(f"  ✗ Could not read migration state: {e}\n")
+            continue
+        finally:
+            db.close()
+
+        for filename in applied:
+            click.echo(f"  ✓ {filename}")
+        for filename in pending:
+            click.echo(f"  • {filename}  (pending)")
+        if not applied and not pending:
+            click.echo("  (no migration files)")
+        click.echo()
 
 
 @db_commands.command()
 @click.argument('name')
+@click.option('--database', default=None, help="Connection to create it for (default: 'default')")
 @click.option('--path', default='.', help='Project directory')
-def new_migration(name, path):
+def new_migration(name, database, path):
     """
     Create a new migration file.
 
     Example:
         scribe db new-migration create_users
+        scribe db new-migration add_page_views --database analytics
     """
     from scribe.migrations import create_migration
 
-    filepath = create_migration(path, name)
+    _, targets = _resolve_migration_targets(path, database or 'default')
+    target = targets[0]
+
+    filepath = create_migration(path, name, target.path)
     click.echo(f"\n✓ Created migration: {filepath}")
     click.echo(f"\nEdit the file to add your SQL statements, then run:")
-    click.echo(f"  scribe db migrate")
+    if target.name == 'default':
+        click.echo(f"  scribe db migrate")
+    else:
+        click.echo(f"  scribe db migrate --database {target.name}")
 
 
 @cli.command()

@@ -40,7 +40,7 @@ $}
 * **Auto-Injected Logic:** Any `.py` file in your `lib/` directory is automatically parsed, making its functions immediately accessible in your templates.
 * **Your Workflow, Your Choice:** Scribe is entirely editor-agnostic. Use the optional, browser-based integrated IDE (`scribe ide`) featuring a Monaco-powered editor and database browser, or stick to your preferred local setup (like Neovim or VS Code) and control everything via the CLI.
 * **Modern Interactivity:** Built-in support for **HTMX 2.x** (via `@no_layout` for fragments) and **SSE** (via the `@sse` decorator and `frame()` helper) lets you build reactive, real-time UIs in pure Python.
-* **Database First:** SQLite is configured by default, but Scribe supports PostgreSQL, MySQL, and other major backends via SQLAlchemy. Migrations are managed by simply dropping `.sql` files into a `migrations/` folder.
+* **Database First:** SQLite is configured by default, and Scribe also supports PostgreSQL and Microsoft SQL Server. Migrations are managed by simply dropping `.sql` files into a `migrations/` folder, with `scribe db status` and `scribe db migrate` when you want to apply them deliberately.
 * **Escape Hatches:** Because Scribe is built on Flask, you have full access to the underlying Flask API whenever you need to break out of the standard Scribe workflow.
 
 ---
