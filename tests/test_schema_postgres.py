@@ -186,3 +186,36 @@ def test_failed_migration_rolls_back(project):
     db.rollback()
     assert not db.has_table('tags')
     assert db.query("SELECT COUNT(*) AS n FROM _migrations")[0]['n'] == 0
+
+
+def test_apply(project):
+    path, db = project
+    config = json.loads((path / 'scribe.json').read_text())
+    assert run('schema', 'pull', '--path', str(path)).exit_code == 0
+    set_schema(path, schema_text(path).replace('    managed=False,', '    managed=True,') + '''
+Table("audit_events",
+    Column("id", "bigint", primary_key=True, autoincrement=True),
+    Column("customer_id", "integer", ForeignKey("customers.id")),
+)
+Table("broken", Column("id", "integer", ForeignKey("nowhere.id")))
+''')
+
+    # auto_migrate is false in the fixture, so apply refuses
+    result = run('schema', 'apply', '--database', 'default', '--path', str(path))
+    assert result.exit_code != 0 and "auto_migrate off" in result.output
+
+    config['databases']['default']['auto_migrate'] = True
+    (path / 'scribe.json').write_text(json.dumps(config))
+
+    # One statement fails, so the whole migration rolls back and its file is removed
+    result = run('schema', 'apply', '--path', str(path))
+    assert result.exit_code != 0 and "rolled back; the file was removed" in result.output
+    db.rollback()
+    assert not db.has_table('audit_events')
+    assert glob.glob(str(path / 'migrations' / '*.sql')) == []
+
+    set_schema(path, schema_text(path).replace('Table("broken", Column("id", "integer", ForeignKey("nowhere.id")))\n', ''))
+    result = run('schema', 'apply', '--path', str(path))
+    assert result.exit_code == 0, result.output
+    assert db.has_table('audit_events')
+    assert "No differences in 5 managed table(s)" in run('schema', 'diff', '--path', str(path)).output

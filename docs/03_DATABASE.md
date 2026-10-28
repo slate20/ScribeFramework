@@ -105,6 +105,8 @@ $}
 
 Migrations are `.sql` files, applied in filename order (`001_`, `002_`, ...). Each applied file is recorded in a `_migrations` table in that database, so it only ever runs once.
 
+Each file runs in a single transaction: if any statement fails, the whole file is rolled back and isn't recorded. (A SQLite file that contains its own `BEGIN`/`COMMIT` or `VACUUM` runs as written instead. MSSQL rolls back most, but not all, DDL.)
+
 Create one with `scribe db new-migration add_posts`, which writes `migrations/003_add_posts.sql` (numbered after the existing files):
 
 ```sql

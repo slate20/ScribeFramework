@@ -473,10 +473,12 @@ def _render_sqlite_rebuild(writer: _Writer, definition: SchemaDefinition, live_t
 
     notes = [f"  {change.column + ': ' if change.column else ''}{change.description}" for change in changes]
     notes += [
-        "To apply these, rebuild the table. Turn foreign key enforcement off while doing it",
-        "(PRAGMA foreign_keys = OFF) if other tables reference this one.",
+        "To apply these, uncomment the rebuild below, including the foreign_keys line if other",
+        "tables reference this one. Scribe turns enforcement off before the migration's transaction,",
+        "checks every foreign key before committing, and turns enforcement back on afterwards.",
     ]
     sql = [
+        "PRAGMA foreign_keys = OFF;",
         render_create_table(table, 'sqlite', name=temp),
         f"INSERT INTO {quote(temp, 'sqlite')} ({_columns(targets, 'sqlite')}) "
         f"SELECT {_columns(sources, 'sqlite')} FROM {quote(table.name, 'sqlite')};",

@@ -146,11 +146,26 @@ What goes in the file:
 
 Uncomment and adjust the REVIEW sections you want before running the file. Dropping a column, for example, deletes its data. Databases may also refuse a change for reasons Scribe can't see: PostgreSQL won't change the type of a column that a view uses until the view is dropped.
 
-**SQLite** can't change a column's type, nullability, or default, or add constraints to an existing table, in place. For those, the migration contains a commented-out rebuild sequence (create a new table, copy the rows, drop the old one, rename) that copies every column the new definition keeps.
+**SQLite** can't change a column's type, nullability, or default, or add constraints to an existing table, in place. For those, the migration contains a commented-out rebuild sequence (create a new table, copy the rows, drop the old one, rename) that copies every column the new definition keeps. It starts with `PRAGMA foreign_keys = OFF;`: keep that line if other tables reference this one. Scribe turns enforcement off before the migration's transaction, runs `PRAGMA foreign_key_check` before committing (rolling back if anything is broken), and turns enforcement back on.
 
 If every change needs review, `generate` writes nothing unless you pass `--force`.
 
 `scribe dev` prints a one-line notice at startup when a schema file has changes that aren't in a migration yet.
+
+## Applying Changes During Development
+
+```bash
+scribe schema apply                 # write a migration with the additive changes and run it now
+scribe schema apply --dry-run       # print it instead
+```
+
+`apply` is `generate` plus `db migrate` in one step, for local development:
+
+- It only runs on connections with `"auto_migrate": true`, which already apply new migrations whenever the app starts. Non-SQLite connections must set the key explicitly. Connections where migrations are applied deliberately (`auto_migrate: false`, typically production) refuse.
+- It includes only additive changes. Anything that needs review is left out and listed; use `generate` for those.
+- It runs any pending migrations first, as the next `scribe dev` would.
+- It writes a normal numbered migration file. **Commit that file with your schema change.** Every other database (a teammate's, CI, production, or a fresh `app.db`) is built from migration files, so a change made without one would exist only in your database.
+- If the migration fails, it is rolled back and the file is removed, so nothing is left half-applied.
 
 ## Commands
 
@@ -160,6 +175,7 @@ scribe schema pull     [--database name]   # add live tables to the schema file 
 scribe schema diff     [--database name]   # compare managed tables with the database (read-only)
 scribe schema status   [--database name]   # summary (read-only)
 scribe schema generate [--database name] [--name NAME] [--dry-run] [--force]
+scribe schema apply    [--database name] [--name NAME] [--dry-run]
 ```
 
 ## Testing against PostgreSQL

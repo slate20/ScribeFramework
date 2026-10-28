@@ -116,18 +116,16 @@ def run_migrations(db: Union[DatabaseAdapter, 'DatabaseManager'], project_path: 
                 sql = f.read()
 
             # Split into individual statements (separated by semicolons)
-            statements = _split_sql_statements(sql)
+            statements = [s.strip() for s in _split_sql_statements(sql) if s.strip()]
 
-            # Execute each statement
-            for statement in statements:
-                statement = statement.strip()
-                if statement:
+            if db.dialect == 'sqlite':
+                _apply_sqlite_file(db, statements, filename)
+            else:
+                for statement in statements:
                     db.execute(statement)
-
-            # Record that this migration was applied
-            _record_migration(db, filename)
-
-            db.commit()
+                # Record that this migration was applied
+                _record_migration(db, filename)
+                db.commit()
             applied_count += 1
 
             print(f"    ✓ Applied {filename}")
@@ -198,6 +196,54 @@ def _create_migrations_table(db: DatabaseAdapter):
 
     db.execute(ddl)
     db.commit()
+
+
+# Statements that mean a SQLite file manages its own transactions
+_SQLITE_TRANSACTION_CONTROL = re.compile(r'^(BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE|VACUUM)\b', re.IGNORECASE)
+_SQLITE_FOREIGN_KEYS_PRAGMA = re.compile(r'^PRAGMA\s+foreign_keys\s*=\s*(\w+)$', re.IGNORECASE)
+
+
+def _apply_sqlite_file(db: DatabaseAdapter, statements: List[str], filename: str):
+    """
+    Run one migration file on SQLite as a single transaction.
+
+    The adapter runs in autocommit mode, so without an explicit BEGIN a failure
+    would leave the earlier statements applied. PRAGMA foreign_keys has no effect
+    inside a transaction, so a file that turns enforcement off (as a table
+    rebuild must) gets it switched off before BEGIN, a foreign_key_check before
+    COMMIT, and enforcement switched back on afterwards. Files that manage their
+    own transactions run as written.
+    """
+    if any(_SQLITE_TRANSACTION_CONTROL.match(statement) for statement in statements):
+        for statement in statements:
+            db.execute(statement)
+        _record_migration(db, filename)
+        db.commit()
+        return
+
+    pragmas = [_SQLITE_FOREIGN_KEYS_PRAGMA.match(statement) for statement in statements]
+    foreign_keys_off = any(m and m.group(1).lower() in ('off', '0', 'false', 'no') for m in pragmas)
+    body = [statement for statement, pragma in zip(statements, pragmas) if not pragma]
+
+    if foreign_keys_off:
+        db.execute("PRAGMA foreign_keys = OFF")
+    try:
+        db.execute("BEGIN")
+        for statement in body:
+            db.execute(statement)
+        if foreign_keys_off:
+            violations = db.query("PRAGMA foreign_key_check")
+            if violations:
+                tables = sorted({row['table'] for row in violations})
+                raise ValueError(f"{len(violations)} foreign key violation(s) in {', '.join(tables)}")
+        _record_migration(db, filename)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        if foreign_keys_off:
+            db.execute("PRAGMA foreign_keys = ON")
 
 
 def _record_migration(db: DatabaseAdapter, filename: str):

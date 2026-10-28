@@ -114,10 +114,11 @@ def _report_schema_changes(db, path):
             click.echo(f"\n⚠ Could not compare {os.path.relpath(file, path)} with '{target.name}': {e}")
             continue
         if count:
+            action = ("'scribe schema apply' applies the additive ones" if _apply_refusal(target, target.name) is None
+                      else "'scribe schema generate' writes one")
             click.echo(
                 f"\n⚠ {count} schema change(s) for '{target.name}' aren't in a migration yet "
-                f"— 'scribe schema diff --database {target.name}' lists them, "
-                f"'scribe schema generate' writes one"
+                f"— 'scribe schema diff --database {target.name}' lists them, {action}"
             )
 
 
@@ -1931,6 +1932,137 @@ def generate(database, migration_name, dry_run, force, path):
         else:
             click.echo(f"  Review it, then run 'scribe db migrate"
                        f"{'' if name == 'default' else ' --database ' + name}'.")
+        click.echo()
+
+
+def _apply_refusal(target, name):
+    """Why `scribe schema apply` won't run on a connection, or None if it may."""
+    if target is None:
+        folder = 'migrations' if name == 'default' else f'migrations/{name}'
+        return (f"Migrations are not enabled for '{name}'. To enable them, add\n"
+                f"  \"migrations\": \"{folder}\"\nto its block in scribe.json.")
+    if not target.auto_migrate:
+        return (f"'{name}' has auto_migrate off, so its migrations are applied deliberately. "
+                f"Use 'scribe schema generate', review the file, then 'scribe db migrate'.")
+    if target.auto_migrate_implicit and target.dialect != 'sqlite':
+        return (f"'{name}' ({target.dialect}) has no explicit \"auto_migrate\" setting. "
+                f"Set \"auto_migrate\": true in its scribe.json block to allow 'scribe schema apply' on it.")
+    return None
+
+
+@schema_commands.command()
+@click.option('--database', default=None,
+              help='Connection name (default: every eligible connection with a schema file)')
+@click.option('--name', 'migration_name', default=None, help='Migration file name (default: from the tables changed)')
+@click.option('--dry-run', is_flag=True, help='Print the migration instead of writing and running it')
+@click.option('--path', default='.', help='Project directory')
+def apply(database, migration_name, dry_run, path):
+    """
+    Generate a migration with only the additive changes, and run it now.
+
+    For local development on connections with "auto_migrate": true. The
+    migration file is written like any other, so commit it with your schema
+    change and other databases get it through 'scribe db migrate'. Changes
+    that need review are left out; 'scribe schema generate' handles those.
+
+    Example:
+        scribe schema apply
+        scribe schema apply --database default --name add_due_date
+    """
+    from scribe.database import create_adapter
+    from scribe.migrations import (
+        get_migration_targets, get_pending_migrations, next_migration_filename, run_migrations,
+        MigrationConfigError,
+    )
+    from scribe.schema.diff import SchemaDiff
+    from scribe.schema.generate import generate_migration
+    from scribe.schema.loader import schema_file_path
+
+    if _no_schemas_dir(path):
+        return
+
+    try:
+        targets = {t.name: t for t in get_migration_targets(_load_databases(path), path)}
+    except MigrationConfigError as e:
+        raise click.ClickException(str(e))
+
+    for name, block in _schema_connections(path, database).items():
+        if not os.path.exists(schema_file_path(path, name)):
+            if database is not None:
+                raise click.ClickException(
+                    f"No schema file for '{name}'. Run 'scribe schema pull --database {name}' to create one."
+                )
+            continue
+        target = targets.get(name)
+        refusal = _apply_refusal(target, name)
+        if refusal:
+            if database is not None:
+                raise click.ClickException(refusal)
+            click.echo(f"{name}: skipped. {refusal}\n")
+            continue
+
+        # This connection would run pending migrations on its next start anyway; do it now
+        # so the diff reflects them.
+        db = create_adapter(block)
+        try:
+            pending = get_pending_migrations(db, target.path)
+            if pending and not dry_run:
+                click.echo(f"{name}: running {len(pending)} pending migration(s) first")
+                try:
+                    run_migrations(db, path, target.path)
+                except Exception:
+                    raise click.ClickException(f"A pending migration for '{name}' failed; fix it and try again.")
+        finally:
+            db.close()
+        if pending and dry_run:
+            raise click.ClickException(
+                f"'{name}' has {len(pending)} pending migration(s); without --dry-run they'd run first. "
+                f"Run 'scribe db migrate --database {name}' to apply them, then try again."
+            )
+
+        check = next(_check_schemas(path, name))
+        additive = SchemaDiff(changes=[c for c in check.diff.changes if c.additive])
+        raw = [r for r in check.raw if r.status == 'new']
+        left_out = len(check.diff.changes) - len(additive.changes) + len(check.raw) - len(raw)
+
+        if not additive.changes and not raw:
+            message = f"{name}: nothing to apply"
+            if left_out:
+                message += (f" — {left_out} change(s) need review; "
+                            f"'scribe schema generate' writes them commented out")
+            click.echo(message)
+            continue
+
+        migration = generate_migration(
+            check.definition, additive, check.live, check.dialect, name,
+            os.path.relpath(check.file, path), raw,
+        )
+        if dry_run:
+            click.echo(migration.sql)
+            continue
+
+        os.makedirs(target.path, exist_ok=True)
+        filename = next_migration_filename(target.path, _migration_slug(migration_name, migration.tables))
+        file = os.path.join(target.path, filename)
+        rel = os.path.relpath(file, path)
+        with open(file, 'w', encoding='utf-8') as f:
+            f.write(migration.sql)
+        click.echo(f"✓ {name}: wrote {rel} ({migration.live} statement(s))")
+
+        db = create_adapter(block)
+        try:
+            run_migrations(db, path, target.path)
+        except Exception:
+            # Nothing was applied (the migration ran in one transaction), so don't leave the file pending
+            os.remove(file)
+            raise click.ClickException(f"Applying {rel} failed and was rolled back; the file was removed.")
+        finally:
+            db.close()
+
+        click.echo(f"  Commit {rel} along with your schema change so other databases get it.")
+        if left_out:
+            click.echo(f"  {left_out} change(s) need review and were left out — "
+                       f"'scribe schema diff --database {name}' lists them")
         click.echo()
 
 
