@@ -363,12 +363,14 @@ class PostgreSQLAdapter(DatabaseAdapter):
     #  Introspection                                                       #
     # ------------------------------------------------------------------ #
 
-    def get_tables(self) -> List[str]:
-        """List tables as 'schema.table', excluding system schemas."""
-        rows = self.query("""
+    def get_tables(self, include_views: bool = False) -> List[str]:
+        """List tables (and optionally views) as 'schema.table', excluding system schemas."""
+        types = "('BASE TABLE', 'VIEW')" if include_views else "('BASE TABLE')"
+        rows = self.query(f"""
             SELECT table_schema, table_name
             FROM information_schema.tables
             WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+              AND table_type IN {types}
             ORDER BY table_schema, table_name
         """)
         return [f"{row['table_schema']}.{row['table_name']}" for row in rows]

@@ -2,7 +2,7 @@
 
 Schema files are an optional, readable description of the tables a database connection has. They live in `schemas/`, one file per connection, and Scribe compares them with the live database.
 
-Schema files never change the database. `.sql` migrations are still the only way the database changes (see [Database Guide](03_DATABASE.md#migrations)).
+Schema files never change the database themselves. `scribe schema generate` turns the differences into an ordinary `.sql` migration, which you review and apply with `scribe db migrate` (see [Database Guide](03_DATABASE.md#migrations)).
 
 Projects without a `schemas/` directory are unaffected.
 
@@ -80,7 +80,7 @@ Lists tables that exist but that Scribe should ignore entirely. `diff` and `stat
 
 ### `raw_sql(name, sql)`
 
-A named block of SQL for things the DSL can't describe, such as views and expression indexes. These blocks aren't compared with the database.
+A named block of SQL for things the DSL can't describe, such as views and expression indexes. These blocks aren't compared with the database. Instead, `generate` includes a block in a migration when it's new or its text has changed. Write blocks so they're safe to run again (`IF NOT EXISTS`, `CREATE OR REPLACE`), and note that `IF NOT EXISTS` won't update an object that already exists.
 
 ## Reading the Diff
 
@@ -125,13 +125,47 @@ default (sqlite) — schemas/schema_default.py
   migrations:  0 pending
 ```
 
+## Generating Migrations
+
+```bash
+scribe schema generate              # write migrations/NNN_schema_<tables>.sql
+scribe schema generate --dry-run    # print it instead
+scribe db migrate                   # apply it (or let auto_migrate do it on startup)
+```
+
+The connection must have migrations enabled (see [Per-connection settings](03_DATABASE.md#per-connection-settings)). `generate` refuses to run while that connection has unapplied migrations, because the diff is computed against the live database and would repeat them.
+
+What goes in the file:
+
+| Change | In the migration |
+|---|---|
+| New table (created after any new tables it references), new nullable column or one with a constant default, new index, new UNIQUE, new `raw_sql()` block | SQL that runs |
+| New foreign key on an existing column | Runs on PostgreSQL and MSSQL; review on SQLite |
+| Type, nullability, default, or primary key changes; dropped columns, indexes, constraints | Commented out under `-- REVIEW` |
+| Possible rename | Commented out: a `RENAME COLUMN` statement, plus the add/drop alternative |
+
+Uncomment and adjust the REVIEW sections you want before running the file. Dropping a column, for example, deletes its data. Databases may also refuse a change for reasons Scribe can't see: PostgreSQL won't change the type of a column that a view uses until the view is dropped.
+
+**SQLite** can't change a column's type, nullability, or default, or add constraints to an existing table, in place. For those, the migration contains a commented-out rebuild sequence (create a new table, copy the rows, drop the old one, rename) that copies every column the new definition keeps.
+
+If every change needs review, `generate` writes nothing unless you pass `--force`.
+
+`scribe dev` prints a one-line notice at startup when a schema file has changes that aren't in a migration yet.
+
 ## Commands
 
 ```bash
 scribe schema init                         # empty schema file per connection
-scribe schema pull   [--database name]     # add live tables to the schema file (read-only on the database)
-scribe schema diff   [--database name]     # compare managed tables with the database (read-only)
-scribe schema status [--database name]     # summary (read-only)
+scribe schema pull     [--database name]   # add live tables to the schema file (read-only on the database)
+scribe schema diff     [--database name]   # compare managed tables with the database (read-only)
+scribe schema status   [--database name]   # summary (read-only)
+scribe schema generate [--database name] [--name NAME] [--dry-run] [--force]
 ```
 
-Generating migrations from the diff (`scribe schema generate`) is planned next.
+## Testing against PostgreSQL
+
+`tests/test_schema_postgres.py` runs the full pull → generate → migrate cycle against a real PostgreSQL database. It is skipped unless `SCRIBE_TEST_POSTGRES` is set, and it **drops and recreates the `public` and `reporting` schemas** in the database you point it at. The database name must contain `test`:
+
+```bash
+SCRIBE_TEST_POSTGRES='{"host": "localhost", "port": 5432, "user": "scribe", "database": "scribe_test"}' pytest tests/test_schema_postgres.py
+```

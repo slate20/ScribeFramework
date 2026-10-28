@@ -7,6 +7,7 @@ Applies SQL migration files from each connection's migrations folder.
 from scribe.migrations.runner import (
     run_migrations,
     create_migration,
+    next_migration_filename,
     get_pending_migrations,
     get_applied_migrations,
 )
@@ -20,6 +21,7 @@ from scribe.migrations.config import (
 __all__ = [
     "run_migrations",
     "create_migration",
+    "next_migration_filename",
     "get_pending_migrations",
     "get_applied_migrations",
     "MigrationTarget",

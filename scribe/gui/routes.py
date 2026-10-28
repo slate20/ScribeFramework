@@ -301,7 +301,7 @@ def get_database_tables(connection_name):
         db = db_manager[connection_name]
 
         try:
-            tables = db.get_tables()
+            tables = db.get_tables(include_views=True)
         except NotImplementedError:
             return jsonify({'tables': [], 'error': f'Database type {db.dialect} not supported yet'}), 500
 

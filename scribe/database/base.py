@@ -273,11 +273,14 @@ class DatabaseAdapter(ABC):
         """Database type from config: 'sqlite', 'postgresql', or 'mssql'"""
         return self.config.get('type', 'sqlite').lower()
 
-    def get_tables(self) -> List[str]:
+    def get_tables(self, include_views: bool = False) -> List[str]:
         """
         List tables in the database, sorted by name.
 
         PostgreSQL names are schema-qualified ('public.users').
+
+        Args:
+            include_views: Also list views (the IDE browses both)
         """
         raise NotImplementedError(f"Introspection is not supported for '{self.dialect}' databases")
 

@@ -6,6 +6,7 @@ Migrations are SQL files in the migrations/ directory, executed in order.
 
 import os
 import glob
+import re
 from typing import List, Optional, Union
 from scribe.database.base import DatabaseAdapter
 
@@ -230,7 +231,6 @@ def _split_sql_statements(sql: str) -> List[str]:
     sql = '\n'.join(lines)
 
     # Remove multi-line comments /* ... */
-    import re
     sql = re.sub(r'/\*.*?\*/', '', sql, flags=re.DOTALL)
 
     # Split by semicolons
@@ -240,6 +240,23 @@ def _split_sql_statements(sql: str) -> List[str]:
     statements = [s.strip() for s in statements if s.strip()]
 
     return statements
+
+
+def next_migration_filename(migrations_path: str, name: str) -> str:
+    """
+    Filename for the next migration in a folder, numbered after the existing files.
+
+    Example:
+        next_migration_filename('migrations', 'add_posts')  # '003_add_posts.sql'
+    """
+    numbers = []
+    for filepath in glob.glob(os.path.join(migrations_path, '*.sql')):
+        match = re.match(r'^(\d+)', os.path.basename(filepath))
+        if match:
+            numbers.append(int(match.group(1)))
+
+    next_num = max(numbers) + 1 if numbers else 1
+    return f"{next_num:03d}_{name}.sql"
 
 
 def create_migration(project_path: str, name: str, migrations_path: Optional[str] = None) -> str:
@@ -266,31 +283,7 @@ def create_migration(project_path: str, name: str, migrations_path: Optional[str
     # Create the migrations folder if it doesn't exist
     os.makedirs(migrations_path, exist_ok=True)
 
-    # Get next migration number
-    existing_migrations = glob.glob(os.path.join(migrations_path, '*.sql'))
-    if existing_migrations:
-        # Extract numbers from filenames
-        numbers = []
-        for filepath in existing_migrations:
-            filename = os.path.basename(filepath)
-            if filename[0].isdigit():
-                # Extract leading number
-                num_str = ''
-                for char in filename:
-                    if char.isdigit():
-                        num_str += char
-                    else:
-                        break
-                if num_str:
-                    numbers.append(int(num_str))
-
-        next_num = max(numbers) + 1 if numbers else 1
-    else:
-        next_num = 1
-
-    # Create filename
-    filename = f"{next_num:03d}_{name}.sql"
-    filepath = os.path.join(migrations_path, filename)
+    filepath = os.path.join(migrations_path, next_migration_filename(migrations_path, name))
 
     # Create file with template
     template = f"""-- Migration: {name}
@@ -303,5 +296,5 @@ def create_migration(project_path: str, name: str, migrations_path: Optional[str
     with open(filepath, 'w', encoding='utf-8') as f:
         f.write(template)
 
-    print(f"Created migration: {filename}")
+    print(f"Created migration: {os.path.basename(filepath)}")
     return filepath

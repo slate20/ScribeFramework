@@ -8,9 +8,9 @@ emit as live SQL and what to comment out.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from scribe.schema.dsl import Column, SchemaDefinition, Table
+from scribe.schema.dsl import Column, SchemaDefinition, SqlExpression, Table
 from scribe.schema.introspect import LiveTable
 from scribe.schema.normalize import declared_default_sql, normalize_default, normalize_type
 
@@ -26,7 +26,8 @@ class Change:
     alter_index, add_foreign_key, drop_foreign_key.
 
     declared/live hold the schema-file object and the database's description
-    of the same thing (either may be None).
+    of the same thing (either may be None). rename is (old, new) when an
+    add_column/drop_column pair looks like a renamed column.
     """
     kind: str
     table: str
@@ -36,6 +37,7 @@ class Change:
     column: Optional[str] = None
     declared: Any = None
     live: Any = None
+    rename: Optional[Tuple[str, str]] = None
 
 
 @dataclass
@@ -132,19 +134,15 @@ def _column_changes(table: Table, live: LiveTable, dialect: str) -> List[Change]
             rename = (dropped[0].name, added[0].name)
 
     for column in added:
-        additive = (column.nullable or column.default is not None) and not column.primary_key and not column.unique
+        reason = _add_column_blocker(column, dialect)
         description = f"add column {column.type}"
         if rename:
-            additive = False
             description += f" (possible rename of {rename[0]} → {rename[1]})"
-        elif not additive:
-            if column.primary_key or column.unique:
-                description += " (primary key/unique columns can't be added in place)"
-            else:
-                description += " (NOT NULL without a default fails on a table with rows)"
+        elif reason:
+            description += f" ({reason})"
         changes.append(Change(
-            kind='add_column', table=table.name, column=column.name, additive=additive,
-            declared=column, description=description,
+            kind='add_column', table=table.name, column=column.name, additive=not rename and not reason,
+            declared=column, description=description, rename=rename,
         ))
 
     for column in dropped:
@@ -153,7 +151,7 @@ def _column_changes(table: Table, live: LiveTable, dialect: str) -> List[Change]
             description += f" (possible rename of {rename[0]} → {rename[1]})"
         changes.append(Change(
             kind='drop_column', table=table.name, column=column.name, additive=False, destructive=True,
-            live=column, description=description,
+            live=column, description=description, rename=rename,
         ))
 
     for column in table.columns:
@@ -161,6 +159,20 @@ def _column_changes(table: Table, live: LiveTable, dialect: str) -> List[Change]
         if live_column is not None:
             changes.extend(_compare_column(table, column, live_column, dialect))
     return changes
+
+
+def _add_column_blocker(column: Column, dialect: str) -> Optional[str]:
+    """Why a column can't safely be added to an existing table in place, or None."""
+    if column.primary_key:
+        return "primary key columns can't be added in place"
+    if not column.nullable and column.default is None:
+        return "NOT NULL without a default fails on a table with rows"
+    if dialect == 'sqlite':
+        if column.unique:
+            return "SQLite can't add a UNIQUE column in place"
+        if isinstance(column.default, SqlExpression):
+            return "SQLite can't add a column with a non-constant default to a table with rows"
+    return None
 
 
 def _type_key(type_name: str, dialect: str) -> str:

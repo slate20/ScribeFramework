@@ -1,6 +1,6 @@
 # Proposal: Hybrid Schema System for ScribeFramework
 
-**Status:** Draft (rev 2) — Phases 0–1 implemented  
+**Status:** Draft (rev 2) — Phases 0–2 implemented  
 **Author:** Matt Venhaus  
 **Date:** 2026-10-27
 
@@ -438,7 +438,7 @@ Default on pull is `managed=False` so that connecting to a production database i
 |-------|-------|
 | **0** | Dialect-safe `_migrations` table; opt-in per-connection `migrations` paths and `--database` on `scribe db migrate`; per-connection `auto_migrate`, `scribe db status`, the startup pending-migrations and implicit-default warnings; `scribe new` writes explicit `migrations` / `auto_migrate: true` on the SQLite `default`; resolve the empty MySQL adapter (now a clear "not supported yet" error); move table/column introspection into adapter methods (`get_tables`, `get_columns`, `has_table`) |
 | **1** | Index and foreign-key introspection (`get_indexes`, `get_foreign_keys`); DSL and registry; `schema init`, `pull`, `diff`, `status` (read-only) |
-| **2** | `schema generate` with the change policy above; `raw_sql` hash tracking; `scribe dev` pending-changes notice |
+| **2** | `schema generate` with the change policy above; `raw_sql` hash tracking; `scribe dev` pending-changes notice. As built: `raw_sql` hashes are recorded as `-- raw_sql: name sha256:…` markers in the generated migrations (no extra table); `generate` refuses while the connection has unapplied migrations, since the diff is against the live database; SQLite review changes are grouped into one commented table-rebuild per table; adding UNIQUE columns or columns with non-constant defaults is review-only on SQLite but additive elsewhere |
 | **3** | Optional `schema apply`: allowed in `dev` only, additive changes only, and records what it ran in `_migrations` so history stays complete |
 | **4** | IDE integration (below); revisit scaffolding new projects with schema files |
 

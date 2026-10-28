@@ -11,6 +11,7 @@ Provides commands:
 
 import click
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -74,6 +75,50 @@ def _run_startup_migrations(db, path, migrate):
         watched.append(target.path)
 
     return watched
+
+
+def _report_schema_changes(db, path):
+    """
+    On dev startup, note connections whose schema file has changes not yet in a migration.
+
+    Only connections with migrations enabled are checked, since only they can generate one.
+    Problems are reported as a warning; they never stop the server from starting.
+    """
+    from scribe.migrations import get_migration_targets
+    from scribe.schema.loader import schemas_dir, schema_file_path
+
+    if not os.path.isdir(schemas_dir(path)):
+        return
+
+    try:
+        targets = get_migration_targets({name: adapter.config for name, adapter in db.items()}, path)
+    except Exception:
+        return  # _run_startup_migrations already reported the config error
+
+    for target in targets:
+        file = schema_file_path(path, target.name)
+        if not os.path.exists(file):
+            continue
+        adapter = db[target.name]
+        try:
+            from scribe.schema.diff import diff_schema
+            from scribe.schema.generate import raw_sql_changes
+            from scribe.schema.introspect import read_live_schema
+            from scribe.schema.loader import load_schema
+
+            definition = load_schema(file)
+            changes = diff_schema(definition, read_live_schema(adapter), target.dialect).changes
+            count = len(changes) + len(raw_sql_changes(definition, target.path))
+        except Exception as e:
+            adapter.rollback()
+            click.echo(f"\n⚠ Could not compare {os.path.relpath(file, path)} with '{target.name}': {e}")
+            continue
+        if count:
+            click.echo(
+                f"\n⚠ {count} schema change(s) for '{target.name}' aren't in a migration yet "
+                f"— 'scribe schema diff --database {target.name}' lists them, "
+                f"'scribe schema generate' writes one"
+            )
 
 
 def _load_databases(path):
@@ -1205,8 +1250,9 @@ def dev(host, port, debug, no_reload, migrate, path):
     # Create app
     app = create_app(path)
 
-    # Apply (or report) pending migrations
+    # Apply (or report) pending migrations, then note schema changes not in a migration yet
     migration_folders = _run_startup_migrations(app.config['DB'], path, migrate)
+    _report_schema_changes(app.config['DB'], path)
 
     # Configure auto-reload to watch project files
     extra_files = []
@@ -1220,6 +1266,8 @@ def dev(host, port, debug, no_reload, migrate, path):
         # Watch migrations of connections that apply them on startup
         for folder in migration_folders:
             extra_files.extend(glob.glob(os.path.join(folder, '*.sql')))
+        # Watch schema files, so the schema-change notice stays current
+        extra_files.extend(glob.glob(os.path.join(path, 'schemas', '*.py')))
         # Watch config
         config_file = os.path.join(path, 'scribe.json')
         if os.path.exists(config_file):
@@ -1612,31 +1660,59 @@ def _change_symbol(change):
     return _CHANGE_SYMBOLS['destructive'] if change.destructive else _CHANGE_SYMBOLS['review']
 
 
-def _diff_connections(path, database):
+class _SchemaCheck:
+    """A connection's schema file compared with its database, for the schema commands."""
+
+    def __init__(self, name, block, file, definition=None, live=None, diff=None, target=None, raw=()):
+        self.name = name
+        self.block = block
+        self.dialect = block.get('type', 'sqlite').lower()
+        self.file = file
+        self.definition = definition    # None when the connection has no schema file
+        self.live = live
+        self.diff = diff
+        self.target = target            # MigrationTarget, or None when migrations are disabled
+        self.raw = list(raw)            # raw_sql blocks not yet in a generated migration
+
+    @property
+    def change_count(self):
+        return len(self.diff.changes) + len(self.raw) if self.diff else 0
+
+
+def _check_schemas(path, database):
     """
-    Load and diff each connection that has a schema file.
+    Load and diff each connection's schema file.
 
     Yields:
-        (name, dialect, schema file, SchemaDefinition, SchemaDiff) — the last two are
-        None when the connection has no schema file
+        _SchemaCheck per connection (with definition=None when it has no schema file)
     """
+    from scribe.migrations import get_migration_targets, MigrationConfigError
     from scribe.schema.diff import diff_schema
+    from scribe.schema.generate import raw_sql_changes
     from scribe.schema.loader import schema_file_path
 
+    try:
+        targets = {t.name: t for t in get_migration_targets(_load_databases(path), path)}
+    except MigrationConfigError as e:
+        raise click.ClickException(str(e))
+
     for name, block in _schema_connections(path, database).items():
-        dialect = block.get('type', 'sqlite').lower()
         file = schema_file_path(path, name)
+        target = targets.get(name)
         if not os.path.exists(file):
             if database is not None:
                 raise click.ClickException(
                     f"No schema file for '{name}'. Run 'scribe schema pull --database {name}' to create one."
                 )
-            yield name, dialect, file, None, None
+            yield _SchemaCheck(name, block, file, target=target)
             continue
 
         definition = _load_schema_file(file)
         live = _read_live_schema(name, block)
-        yield name, dialect, file, definition, diff_schema(definition, live, dialect)
+        dialect = block.get('type', 'sqlite').lower()
+        # raw_sql blocks are tracked through generated migrations, so only connections with migrations have them
+        raw = raw_sql_changes(definition, target.path) if target else []
+        yield _SchemaCheck(name, block, file, definition, live, diff_schema(definition, live, dialect), target, raw)
 
 
 @schema_commands.command()
@@ -1655,14 +1731,14 @@ def diff(database, path):
     if _no_schemas_dir(path):
         return
 
-    for name, dialect, file, _, result in _diff_connections(path, database):
-        if result is None:
+    for check in _check_schemas(path, database):
+        if check.definition is None:
             continue
-        click.echo(f"{name} ({dialect}) — {os.path.relpath(file, path)}")
+        result = check.diff
+        click.echo(f"{check.name} ({check.dialect}) — {os.path.relpath(check.file, path)}")
 
-        if not result.changes:
-            managed = len(result.in_sync)
-            click.echo(f"  ✓ No differences in {managed} managed table(s)\n")
+        if not check.change_count:
+            click.echo(f"  ✓ No differences in {len(result.in_sync)} managed table(s)\n")
             continue
 
         for table in result.changed_tables():
@@ -1673,9 +1749,16 @@ def diff(database, path):
                 target = f"{change.column}: " if change.column else ""
                 click.echo(f"    {_change_symbol(change)} {target}{change.description}")
 
-        review = result.needs_review
-        destructive = [c for c in review if c.destructive]
-        summary = f"  {len(result.additive)} additive, {len(review)} need review"
+        if check.raw:
+            click.echo("  raw_sql")
+            for raw in check.raw:
+                symbol = '+' if raw.status == 'new' else '!'
+                click.echo(f"    {symbol} {raw.name}: {raw.status} since the last generated migration")
+
+        review = result.needs_review + [r for r in check.raw if r.status != 'new']
+        destructive = [c for c in result.needs_review if c.destructive]
+        additive = len(result.additive) + len([r for r in check.raw if r.status == 'new'])
+        summary = f"  {additive} additive, {len(review)} need review"
         if destructive:
             summary += f" ({len(destructive)} would drop data)"
         click.echo(summary + "\n")
@@ -1692,23 +1775,21 @@ def schema_status(database, path):
         scribe schema status
     """
     from scribe.database import create_adapter
-    from scribe.migrations import get_migration_targets, get_pending_migrations, MigrationConfigError
+    from scribe.migrations import get_pending_migrations
 
     if _no_schemas_dir(path):
         return
 
-    try:
-        targets = {t.name: t for t in get_migration_targets(_load_databases(path), path)}
-    except MigrationConfigError as e:
-        raise click.ClickException(str(e))
-
-    for name, dialect, file, definition, result in _diff_connections(path, database):
-        rel = os.path.relpath(file, path)
-        if result is None:
-            click.echo(f"{name} ({dialect}): no schema file — 'scribe schema pull --database {name}' creates one\n")
+    for check in _check_schemas(path, database):
+        name = check.name
+        rel = os.path.relpath(check.file, path)
+        if check.definition is None:
+            click.echo(f"{name} ({check.dialect}): no schema file — "
+                       f"'scribe schema pull --database {name}' creates one\n")
             continue
 
-        click.echo(f"{name} ({dialect}) — {rel}")
+        result = check.diff
+        click.echo(f"{name} ({check.dialect}) — {rel}")
         changed = result.changed_tables()
         managed = len(result.in_sync) + len(changed)
         line = f"  managed:     {managed} table(s)"
@@ -1728,19 +1809,128 @@ def schema_status(database, path):
             click.echo(f"  changes:     {len(result.additive)} additive, {len(result.needs_review)} need review "
                        f"— 'scribe schema diff --database {name}' lists them")
 
-        if definition.raw_sql:
-            click.echo(f"  raw_sql:     {len(definition.raw_sql)} block(s), not compared with the database")
+        blocks = len(check.definition.raw_sql)
+        if blocks or check.raw:
+            line = f"  raw_sql:     {blocks} block(s)"
+            if check.target is None:
+                line += " (not tracked: migrations are disabled)"
+            elif check.raw:
+                line += f", {len(check.raw)} not in a migration yet"
+            click.echo(line)
 
-        target = targets.get(name)
-        if target is None:
+        if check.target is None:
             click.echo("  migrations:  disabled")
         else:
-            db = create_adapter(_load_databases(path)[name])
+            db = create_adapter(check.block)
             try:
-                pending = get_pending_migrations(db, target.path)
+                pending = get_pending_migrations(db, check.target.path)
             finally:
                 db.close()
             click.echo(f"  migrations:  {len(pending)} pending" + (" — 'scribe db migrate'" if pending else ""))
+        click.echo()
+
+
+def _migration_slug(name, tables):
+    """File name part for a generated migration: --name, or derived from the tables it touches."""
+    if name:
+        slug = name
+    elif tables:
+        slug = 'schema_' + '_'.join(t.rpartition('.')[2] for t in tables[:3])
+        if len(tables) > 3:
+            slug += '_etc'
+    else:
+        slug = 'schema_raw_sql'
+    return re.sub(r'[^A-Za-z0-9_]+', '_', slug).strip('_').lower() or 'schema'
+
+
+@schema_commands.command()
+@click.option('--database', default=None,
+              help='Connection name (default: every connection with a schema file and migrations enabled)')
+@click.option('--name', 'migration_name', default=None, help='Migration file name (default: from the tables changed)')
+@click.option('--dry-run', is_flag=True, help='Print the migration instead of writing it')
+@click.option('--force', is_flag=True, help='Write the file even if every change is commented out for review')
+@click.option('--path', default='.', help='Project directory')
+def generate(database, migration_name, dry_run, force, path):
+    """
+    Write a .sql migration from the differences between schema files and the database.
+
+    Additive changes are written as SQL that runs. Changes that could lose
+    data or can't be made in place are written commented-out under
+    "-- REVIEW" for you to check. Apply the file with 'scribe db migrate'.
+
+    Example:
+        scribe schema generate
+        scribe schema generate --database analytics --name add_page_views
+        scribe schema generate --dry-run
+    """
+    from scribe.database import create_adapter
+    from scribe.migrations import get_pending_migrations, next_migration_filename
+    from scribe.schema.generate import generate_migration
+
+    if _no_schemas_dir(path):
+        return
+
+    for check in _check_schemas(path, database):
+        name = check.name
+        if check.definition is None:
+            continue
+        if check.target is None:
+            folder = 'migrations' if name == 'default' else f'migrations/{name}'
+            message = (f"Migrations are not enabled for '{name}', so there's nowhere to write the migration. "
+                       f"To enable them, add\n  \"migrations\": \"{folder}\"\nto its block in scribe.json.")
+            if database is not None:
+                raise click.ClickException(message)
+            click.echo(f"{name}: skipped. {message}\n")
+            continue
+
+        if not check.change_count:
+            click.echo(f"{name}: nothing to generate — the database matches {os.path.relpath(check.file, path)}")
+            continue
+
+        # The diff is against the live database, so unapplied migrations would be generated again
+        db = create_adapter(check.block)
+        try:
+            pending = get_pending_migrations(db, check.target.path)
+        finally:
+            db.close()
+        if pending:
+            raise click.ClickException(
+                f"'{name}' has {len(pending)} pending migration(s) ({', '.join(pending)}). "
+                f"Run 'scribe db migrate --database {name}' first so the diff includes them."
+            )
+
+        migration = generate_migration(
+            check.definition, check.diff, check.live, check.dialect, name,
+            os.path.relpath(check.file, path), check.raw,
+        )
+
+        if dry_run:
+            click.echo(migration.sql)
+            continue
+
+        if migration.live == 0 and not force:
+            click.echo(
+                f"{name}: all {migration.review} change(s) need review, so the migration would run nothing.\n"
+                f"  Run 'scribe schema diff --database {name}' to see them, '--dry-run' to see the SQL, "
+                f"or '--force' to write the commented-out file anyway.\n"
+            )
+            continue
+
+        os.makedirs(check.target.path, exist_ok=True)
+        filename = next_migration_filename(check.target.path, _migration_slug(migration_name, migration.tables))
+        file = os.path.join(check.target.path, filename)
+        with open(file, 'w', encoding='utf-8') as f:
+            f.write(migration.sql)
+
+        rel = os.path.relpath(file, path)
+        click.echo(f"✓ {name}: wrote {rel}")
+        click.echo(f"  {migration.live} statement(s) will run, {migration.review} commented out for review")
+        if check.target.auto_migrate:
+            click.echo(f"  auto_migrate is on: it will run on the next 'scribe dev', 'scribe ide', or "
+                       f"'scribe serve' start. Review it before then, or run 'scribe db migrate'.")
+        else:
+            click.echo(f"  Review it, then run 'scribe db migrate"
+                       f"{'' if name == 'default' else ' --database ' + name}'.")
         click.echo()
 
 

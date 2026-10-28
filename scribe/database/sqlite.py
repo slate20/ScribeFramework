@@ -248,9 +248,10 @@ class SQLiteAdapter(DatabaseAdapter):
 
     # === Introspection ===
 
-    def get_tables(self) -> List[str]:
-        """List tables in the database, sorted by name."""
-        rows = self.query("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+    def get_tables(self, include_views: bool = False) -> List[str]:
+        """List tables (and optionally views) in the database, sorted by name."""
+        types = "('table', 'view')" if include_views else "('table')"
+        rows = self.query(f"SELECT name FROM sqlite_master WHERE type IN {types} ORDER BY name")
         return [row['name'] for row in rows]
 
     def get_columns(self, table: str) -> List[ColumnInfo]:

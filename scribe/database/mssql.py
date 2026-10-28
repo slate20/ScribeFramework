@@ -360,12 +360,13 @@ class MSSQLAdapter(DatabaseAdapter):
 
     # === Introspection ===
 
-    def get_tables(self) -> List[str]:
-        """List base tables in the database, sorted by name."""
-        rows = self.query("""
+    def get_tables(self, include_views: bool = False) -> List[str]:
+        """List base tables (and optionally views) in the database, sorted by name."""
+        types = "('BASE TABLE', 'VIEW')" if include_views else "('BASE TABLE')"
+        rows = self.query(f"""
             SELECT TABLE_NAME
             FROM INFORMATION_SCHEMA.TABLES
-            WHERE TABLE_TYPE = 'BASE TABLE'
+            WHERE TABLE_TYPE IN {types}
             ORDER BY TABLE_NAME
         """)
         return [row['TABLE_NAME'] for row in rows]
