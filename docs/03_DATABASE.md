@@ -138,7 +138,9 @@ Each connection block in `scribe.json` decides whether Scribe may change that da
 
 New projects from `scribe new` set both explicitly on the SQLite `default` connection, so the starter tables are created on the first `scribe dev`.
 
-**Switching `default` to PostgreSQL or MSSQL?** Revisit these keys in the same block. The starter migrations use SQLite syntax, and with `auto_migrate` on they will run against the new database at startup. Set `"migrations": false` if Scribe should never change it, or `"auto_migrate": false` to apply migrations yourself with `scribe db migrate`. If `auto_migrate` is missing on a non-SQLite connection, startup prints a warning before running anything.
+**Switching `default` to PostgreSQL or MSSQL?** Revisit these keys in the same block. The starter migrations use SQLite syntax, and with `auto_migrate` on they will run against the new database at startup. Set `"migrations": false` if Scribe should never change it, or `"auto_migrate": false` to apply migrations yourself with `scribe db migrate`.
+
+If a PostgreSQL or MSSQL `default` connection doesn't set `migrations` (typical for an app that connects to a database whose schema is managed elsewhere), Scribe still treats `migrations/` as its folder, as it always has. Startup prints a warning about it every time until the key is set, and `scribe db new-migration`, `scribe schema generate`, and `scribe schema apply` refuse to create migrations for it. Add `"migrations": false` for a database Scribe should never change, or `"migrations": "migrations"` if it should manage the schema. (If only `auto_migrate` is missing, startup prints a warning before running anything.)
 
 ### Migrations for other connections
 

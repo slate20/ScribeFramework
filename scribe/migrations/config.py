@@ -31,6 +31,18 @@ class MigrationTarget:
     auto_migrate: bool        # Apply pending migrations on dev/ide/serve startup
     auto_migrate_implicit: bool  # auto_migrate came from the default, not scribe.json
     dialect: str
+    migrations_implicit: bool = False  # 'migrations' came from the default (only possible on 'default')
+
+    @property
+    def needs_explicit_migrations(self) -> bool:
+        """
+        A non-SQLite connection whose migrations are on only by default.
+
+        Usually an app pointed at a database whose schema is managed elsewhere,
+        upgraded from before migrations were configurable. Scribe warns about it
+        and won't create migration files for it until scribe.json says so.
+        """
+        return self.migrations_implicit and self.dialect != 'sqlite'
 
 
 def get_databases_config(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -65,6 +77,7 @@ def get_migration_targets(databases: Dict[str, Dict[str, Any]], project_path: st
 
     for name, block in databases.items():
         is_default = name == DEFAULT_CONNECTION
+        migrations_implicit = 'migrations' not in block
         migrations = block.get('migrations', 'migrations' if is_default else False)
 
         if migrations is False or migrations is None:
@@ -100,6 +113,7 @@ def get_migration_targets(databases: Dict[str, Dict[str, Any]], project_path: st
             auto_migrate=auto_migrate,
             auto_migrate_implicit=auto_migrate_implicit,
             dialect=block.get('type', 'sqlite').lower(),
+            migrations_implicit=migrations_implicit,
         ))
 
     return targets

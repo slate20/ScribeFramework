@@ -259,16 +259,78 @@ class FakeManager(dict):
     pass
 
 
+def pretend_postgres(tmp_path, **settings):
+    adapter = PretendPostgres({'type': 'sqlite', 'database': str(tmp_path / 'app.db'), **settings})
+    adapter.config['type'] = 'postgresql'
+    return adapter
+
+
+def test_implicit_migrations_on_non_sqlite_default_warns(tmp_path, capsys):
+    path = make_project(tmp_path, {})
+    adapter = pretend_postgres(tmp_path)
+
+    _run_startup_migrations(FakeManager(default=adapter), path, None)
+
+    out = capsys.readouterr().out
+    assert "'default' (postgresql) doesn't set \"migrations\"" in out
+    assert "Its 1 pending migration(s) there will run now." in out
+    assert '"migrations": false' in out
+    assert adapter.has_table('a')
+
+
+def test_implicit_migrations_warning_without_a_folder(tmp_path, capsys):
+    path = make_project(tmp_path, {})
+    import shutil
+    shutil.rmtree(tmp_path / 'migrations')
+    adapter = pretend_postgres(tmp_path)
+
+    _run_startup_migrations(FakeManager(default=adapter), path, None)
+
+    out = capsys.readouterr().out
+    assert "That folder doesn't exist, so nothing runs today" in out
+    assert not adapter.has_table('_migrations')
+
+
+def test_explicit_migrations_setting_silences_the_warning(tmp_path, capsys):
+    path = make_project(tmp_path, {})
+    for settings in ({'migrations': False}, {'migrations': 'migrations', 'auto_migrate': True}):
+        _run_startup_migrations(FakeManager(default=pretend_postgres(tmp_path, **settings)), path, None)
+        assert "doesn't set" not in capsys.readouterr().out
+
+
 def test_implicit_auto_migrate_on_non_sqlite_warns(tmp_path, capsys):
     path = make_project(tmp_path, {})
-    adapter = PretendPostgres({'type': 'sqlite', 'database': str(tmp_path / 'app.db')})
-    adapter.config['type'] = 'postgresql'
+    adapter = pretend_postgres(tmp_path, migrations='migrations')
 
     _run_startup_migrations(FakeManager(default=adapter), path, None)
 
     out = capsys.readouterr().out
     assert "has no 'auto_migrate' setting" in out
     assert adapter.has_table('a')
+
+
+def test_sqlite_default_without_settings_does_not_warn(tmp_path, capsys):
+    path = make_project(tmp_path, {})
+    manager = DatabaseManager({'databases': {'default': {'type': 'sqlite', 'database': str(tmp_path / 'app.db')}}})
+
+    _run_startup_migrations(manager, path, None)
+
+    out = capsys.readouterr().out
+    assert "doesn't set" not in out and "no 'auto_migrate'" not in out
+
+
+def test_commands_wont_create_migrations_for_implicit_non_sqlite_default(tmp_path):
+    from scribe.cli import _implicit_migrations_refusal, _apply_refusal
+
+    [target] = get_migration_targets({'default': {'type': 'postgresql'}}, str(tmp_path))
+    assert target.needs_explicit_migrations
+    assert '"migrations": "migrations"' in _implicit_migrations_refusal(target)
+    assert _apply_refusal(target, 'default') == _implicit_migrations_refusal(target)
+
+    [explicit] = get_migration_targets({'default': {'type': 'postgresql', 'migrations': True}}, str(tmp_path))
+    assert not explicit.needs_explicit_migrations
+    [sqlite_target] = get_migration_targets({'default': {'type': 'sqlite'}}, str(tmp_path))
+    assert not sqlite_target.needs_explicit_migrations
 
 
 def test_explicit_auto_migrate_on_non_sqlite_does_not_warn(tmp_path, capsys):

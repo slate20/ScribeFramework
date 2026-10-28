@@ -17,6 +17,40 @@ import sys
 from pathlib import Path
 
 
+def _implicit_migrations_warning(target, path, pending=None, will_run=False):
+    """
+    Startup warning for a non-SQLite connection that doesn't say whether Scribe may change it.
+
+    Args:
+        pending: Pending migration filenames, or None if they couldn't be read
+        will_run: Whether they're about to be applied
+    """
+    folder = os.path.relpath(target.path, path)
+    lines = [f"⚠ '{target.name}' ({target.dialect}) doesn't set \"migrations\" in scribe.json, "
+             f"so Scribe treats {folder}/ as its migrations folder."]
+    if not os.path.isdir(target.path):
+        lines.append("  That folder doesn't exist, so nothing runs today, but migrations added there would.")
+    elif pending and will_run:
+        lines.append(f"  Its {len(pending)} pending migration(s) there will run now.")
+    elif pending:
+        lines.append(f"  It has {len(pending)} pending migration(s) there.")
+    lines += [
+        "  If this database's schema is managed outside this app, add \"migrations\": false to its block.",
+        f"  If Scribe should manage it, add \"migrations\": \"{folder}\" and \"auto_migrate\" (true or false).",
+    ]
+    return '\n'.join(lines)
+
+
+def _implicit_migrations_refusal(target):
+    """Why a command won't create migration files for a connection, or None if it may."""
+    if not target.needs_explicit_migrations:
+        return None
+    # Only 'default' has migrations on without the key, and then the folder is always migrations/
+    return (f"'{target.name}' ({target.dialect}) doesn't set \"migrations\" in scribe.json, so Scribe won't "
+            f"create migrations for it. If Scribe should manage its schema, add \"migrations\": \"migrations\" "
+            f"to its block (or \"migrations\": false if the schema is managed elsewhere).")
+
+
 def _run_startup_migrations(db, path, migrate):
     """
     Apply or report pending migrations for each connection on dev/ide/serve startup.
@@ -44,7 +78,18 @@ def _run_startup_migrations(db, path, migrate):
         folder = os.path.relpath(target.path, path)
         auto_migrate = target.auto_migrate if migrate is None else migrate
 
-        if not auto_migrate:
+        # Repeats on every start until scribe.json says whether Scribe may change this database
+        if target.needs_explicit_migrations:
+            try:
+                pending = get_pending_migrations(adapter, target.path)
+            except Exception:
+                adapter.rollback()
+                pending = None
+            click.echo('\n' + _implicit_migrations_warning(target, path, pending, will_run=auto_migrate))
+            if not auto_migrate or not pending:
+                continue
+
+        elif not auto_migrate:
             try:
                 pending = get_pending_migrations(adapter, target.path)
             except Exception as e:
@@ -60,7 +105,7 @@ def _run_startup_migrations(db, path, migrate):
 
         # A non-SQLite connection auto-migrating only because the key is missing usually
         # means a SQLite block was replaced without revisiting its migration settings.
-        if migrate is None and target.auto_migrate_implicit and target.dialect != 'sqlite':
+        elif migrate is None and target.auto_migrate_implicit and target.dialect != 'sqlite':
             pending = get_pending_migrations(adapter, target.path)
             if pending:
                 click.echo(
@@ -97,7 +142,7 @@ def _report_schema_changes(db, path):
 
     for target in targets:
         file = schema_file_path(path, target.name)
-        if not os.path.exists(file):
+        if not os.path.exists(file) or target.needs_explicit_migrations:
             continue
         adapter = db[target.name]
         try:
@@ -1490,6 +1535,9 @@ def status(database, path):
         if target.auto_migrate_implicit:
             auto += ' (default)'
         click.echo(f"{name}: {os.path.relpath(target.path, path)}/  auto_migrate: {auto}")
+        if target.needs_explicit_migrations:
+            click.echo(f"  ⚠ \"migrations\" isn't set for this {target.dialect} connection; add \"migrations\": false "
+                       f"if its schema is managed elsewhere")
 
         if not os.path.isdir(target.path):
             click.echo("  (folder does not exist)\n")
@@ -1530,6 +1578,9 @@ def new_migration(name, database, path):
 
     _, targets = _resolve_migration_targets(path, database or 'default')
     target = targets[0]
+    refusal = _implicit_migrations_refusal(target)
+    if refusal:
+        raise click.ClickException(refusal)
 
     filepath = create_migration(path, name, target.path)
     click.echo(f"\n✓ Created migration: {filepath}")
@@ -1918,9 +1969,10 @@ def generate(database, migration_name, dry_run, force, path):
         name = check.name
         if check.definition is None:
             continue
-        if check.target is None:
+        if check.target is None or check.target.needs_explicit_migrations:
             folder = 'migrations' if name == 'default' else f'migrations/{name}'
-            message = (f"Migrations are not enabled for '{name}', so there's nowhere to write the migration. "
+            message = (_implicit_migrations_refusal(check.target) if check.target else
+                       f"Migrations are not enabled for '{name}', so there's nowhere to write the migration. "
                        f"To enable them, add\n  \"migrations\": \"{folder}\"\nto its block in scribe.json.")
             if database is not None:
                 raise click.ClickException(message)
@@ -1984,6 +2036,8 @@ def _apply_refusal(target, name):
         folder = 'migrations' if name == 'default' else f'migrations/{name}'
         return (f"Migrations are not enabled for '{name}'. To enable them, add\n"
                 f"  \"migrations\": \"{folder}\"\nto its block in scribe.json.")
+    if target.needs_explicit_migrations:
+        return _implicit_migrations_refusal(target)
     if not target.auto_migrate:
         return (f"'{name}' has auto_migrate off, so its migrations are applied deliberately. "
                 f"Use 'scribe schema generate', review the file, then 'scribe db migrate'.")
