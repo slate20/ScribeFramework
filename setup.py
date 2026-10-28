@@ -21,7 +21,7 @@ if os.path.exists("README.md"):
 
 setup(
     name="scribe-engine",
-    version=version.get("__version__", "2.0.0-alpha"),
+    version=version["__version__"],
     author="ScribeEngine Team",
     author_email="",  # TBD
     description="A Python web framework where you write Python directly in templates",

@@ -16,6 +16,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from scribe import __version__
+
 
 def _implicit_migrations_warning(target, path, pending=None, will_run=False):
     """
@@ -229,7 +231,7 @@ def _resolve_migration_targets(path, database=None):
 
 
 @click.group()
-@click.version_option(version="2.0.0-alpha")
+@click.version_option(version=__version__)
 def cli():
     """ScribeFramework - Write Python directly in templates"""
     pass
