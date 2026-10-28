@@ -27,6 +27,25 @@ from scribe.helpers import response, forms, auth
 from scribe.helpers.auth import configure_auth  # NEW
 
 
+def _warn_on_venv_version_mismatch(venv_path: str, project_path: str, venv_version: tuple):
+    """
+    Warn when a project venv was made with a different Python than Scribe runs.
+
+    Pure-Python packages still import across versions, but compiled packages
+    (psycopg2, numpy, orjson, ...) are built for one minor version and fail to
+    load with confusing errors such as "No module named 'orjson.orjson'".
+    """
+    running = tuple(sys.version_info[:2])
+    if venv_version == running:
+        return
+    have = '.'.join(map(str, venv_version))
+    want = '.'.join(map(str, running))
+    rel = os.path.relpath(venv_path, project_path)
+    print(f"  Warning: {rel} uses Python {have}, but Scribe runs Python {want}. Pure-Python packages\n"
+          f"  will work, but compiled ones (psycopg2, numpy, orjson, ...) won't load. Recreate it with\n"
+          f"  Python {want}, e.g. 'uv venv --python {want} {rel}', then reinstall its packages.")
+
+
 def inject_project_venv(project_path: str, venv_hint: Optional[str] = None):
     """
     Inject a project virtual environment's full Python path into sys.path.
@@ -73,10 +92,11 @@ def inject_project_venv(project_path: str, venv_hint: Optional[str] = None):
         if not python_exe:
             continue
 
-        # Ask the venv Python for its full sys.path — stdlib + site-packages
+        # Ask the venv Python for its full sys.path — stdlib + site-packages — and its version
         try:
             result = subprocess.run(
-                [python_exe, '-c', 'import sys, json; print(json.dumps(sys.path))'],
+                [python_exe, '-c',
+                 'import sys, json; print(json.dumps({"path": sys.path, "version": list(sys.version_info[:2])}))'],
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -84,14 +104,15 @@ def inject_project_venv(project_path: str, venv_hint: Optional[str] = None):
             if result.returncode != 0:
                 continue
 
-            venv_paths = json.loads(result.stdout.strip())
+            venv_info = json.loads(result.stdout.strip())
             added = 0
-            for path in venv_paths:
+            for path in venv_info['path']:
                 if path and path not in sys.path:
                     sys.path.append(path)
                     added += 1
 
             print(f"  Venv: {venv_path} ({added} paths injected)")
+            _warn_on_venv_version_mismatch(venv_path, project_path, tuple(venv_info['version']))
             return
 
         except Exception as e:

@@ -185,6 +185,19 @@ def _require_connection(databases, name):
         )
 
 
+def _connect(name, block):
+    """Open a connection for a CLI command, turning connection failures into a one-line error."""
+    from scribe.database import create_adapter
+
+    try:
+        return create_adapter(block)
+    except Exception as e:
+        detail = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
+        raise click.ClickException(
+            f"Could not connect to '{name}' ({block.get('type', 'sqlite')}): {detail}"
+        )
+
+
 def _resolve_migration_targets(path, database=None):
     """
     Load scribe.json and get the connections that `scribe db` commands should act on.
@@ -1483,7 +1496,6 @@ def migrate(database, path):
         scribe db migrate                       # All connections with migrations enabled
         scribe db migrate --database analytics  # One connection
     """
-    from scribe.database import create_adapter
     from scribe.migrations import run_migrations
 
     databases, targets = _resolve_migration_targets(path, database)
@@ -1493,7 +1505,7 @@ def migrate(database, path):
 
     for target in targets:
         click.echo(f"Running migrations for '{target.name}' ({os.path.relpath(target.path, path)}/)...")
-        db = create_adapter(databases[target.name])
+        db = _connect(target.name, databases[target.name])
         try:
             run_migrations(db, path, target.path)
         except Exception:
@@ -1516,7 +1528,6 @@ def status(database, path):
         scribe db status
         scribe db status --database analytics
     """
-    from scribe.database import create_adapter
     from scribe.migrations import get_applied_migrations, get_pending_migrations
 
     databases, targets = _resolve_migration_targets(path)
@@ -1543,7 +1554,7 @@ def status(database, path):
             click.echo("  (folder does not exist)\n")
             continue
 
-        db = create_adapter(databases[name])
+        db = _connect(name, databases[name])
         try:
             applied = get_applied_migrations(db)
             pending = get_pending_migrations(db, target.path)
@@ -1613,10 +1624,9 @@ def _read_live_schema(name, block, table_filter=None):
     Returns:
         (live tables accepted by table_filter, total number of tables in the database)
     """
-    from scribe.database import create_adapter
     from scribe.schema.introspect import read_live_schema_counted
 
-    db = create_adapter(block)
+    db = _connect(name, block)
     try:
         return read_live_schema_counted(db, table_filter)
     except NotImplementedError as e:
@@ -1866,7 +1876,6 @@ def schema_status(database, path):
     Example:
         scribe schema status
     """
-    from scribe.database import create_adapter
     from scribe.migrations import get_pending_migrations
 
     if _no_schemas_dir(path):
@@ -1916,7 +1925,7 @@ def schema_status(database, path):
         if check.target is None:
             click.echo("  migrations:  disabled")
         else:
-            db = create_adapter(check.block)
+            db = _connect(check.name, check.block)
             try:
                 pending = get_pending_migrations(db, check.target.path)
             finally:
@@ -1958,7 +1967,6 @@ def generate(database, migration_name, dry_run, force, path):
         scribe schema generate --database analytics --name add_page_views
         scribe schema generate --dry-run
     """
-    from scribe.database import create_adapter
     from scribe.migrations import get_pending_migrations, next_migration_filename
     from scribe.schema.generate import generate_migration
 
@@ -1984,7 +1992,7 @@ def generate(database, migration_name, dry_run, force, path):
             continue
 
         # The diff is against the live database, so unapplied migrations would be generated again
-        db = create_adapter(check.block)
+        db = _connect(check.name, check.block)
         try:
             pending = get_pending_migrations(db, check.target.path)
         finally:
@@ -2066,7 +2074,6 @@ def apply(database, migration_name, dry_run, path):
         scribe schema apply
         scribe schema apply --database default --name add_due_date
     """
-    from scribe.database import create_adapter
     from scribe.migrations import (
         get_migration_targets, get_pending_migrations, next_migration_filename, run_migrations,
         MigrationConfigError,
@@ -2100,7 +2107,7 @@ def apply(database, migration_name, dry_run, path):
 
         # This connection would run pending migrations on its next start anyway; do it now
         # so the diff reflects them.
-        db = create_adapter(block)
+        db = _connect(name, block)
         try:
             pending = get_pending_migrations(db, target.path)
             if pending and not dry_run:
@@ -2146,7 +2153,7 @@ def apply(database, migration_name, dry_run, path):
             f.write(migration.sql)
         click.echo(f"✓ {name}: wrote {rel} ({migration.live} statement(s))")
 
-        db = create_adapter(block)
+        db = _connect(name, block)
         try:
             run_migrations(db, path, target.path)
         except Exception:

@@ -444,3 +444,13 @@ def test_new_project_scaffold_has_explicit_migration_settings(tmp_path):
         default = json.load(f)['databases']['default']
     assert default['migrations'] == 'migrations'
     assert default['auto_migrate'] is True
+
+
+def test_unreachable_database_gives_a_one_line_error(tmp_path):
+    path = make_project(tmp_path, {'default': {'type': 'sqlite', 'database': str(tmp_path / 'missing' / 'app.db')}})
+
+    for command in (['db', 'status'], ['db', 'migrate'], ['schema', 'pull']):
+        result = CliRunner().invoke(cli, command + ['--path', path])
+        assert result.exit_code == 1, (command, result.output)
+        assert "Error: Could not connect to 'default' (sqlite): unable to open database file" in result.output
+        assert "Traceback" not in result.output
