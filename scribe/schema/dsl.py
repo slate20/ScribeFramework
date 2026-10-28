@@ -19,6 +19,7 @@ Example:
     Index("idx_orders_status", "orders", ["status", "created_at"])
 """
 
+import fnmatch
 import json
 from typing import Any, Dict, List, Optional
 
@@ -220,6 +221,76 @@ def unmanaged(*names: str):
         _register('unmanaged', name)
 
 
+class Scope:
+    """Which database tables a schema file covers; see scope()."""
+
+    def __init__(self, include: Optional[List[str]] = None, exclude: Optional[List[str]] = None):
+        self.include = _patterns('include', include)
+        self.exclude = _patterns('exclude', exclude) or []
+
+    def matches(self, table: str, default_schema: Optional[str] = None) -> bool:
+        """
+        Whether a table name matches the include/exclude patterns.
+
+        A pattern without a dot matches the table name in any schema ('*_backup');
+        a pattern with a dot matches 'schema.table' ('reporting.*'). Unqualified
+        table names are in the connection's default schema, so on PostgreSQL the
+        table 'orders' matches 'public.*'.
+        """
+        if self.include is not None and not any(_match(table, p, default_schema) for p in self.include):
+            return False
+        return not any(_match(table, p, default_schema) for p in self.exclude)
+
+    def __repr__(self):
+        args = []
+        if self.include is not None:
+            args.append(f"include={self.include!r}")
+        if self.exclude:
+            args.append(f"exclude={self.exclude!r}")
+        return f"scope({', '.join(args)})"
+
+
+def _patterns(argument: str, patterns) -> Optional[List[str]]:
+    if patterns is None:
+        return None
+    if isinstance(patterns, str):
+        patterns = [patterns]
+    if not isinstance(patterns, (list, tuple)) or not all(isinstance(p, str) and p.strip() for p in patterns):
+        raise SchemaError(f"scope({argument}=...) takes a list of table name patterns, e.g. [\"orders\", \"hr_*\"]")
+    return [p.strip() for p in patterns]
+
+
+def _match(table: str, pattern: str, default_schema: Optional[str]) -> bool:
+    table, pattern = table.lower(), pattern.lower()
+    if '.' not in pattern:
+        return fnmatch.fnmatchcase(table.rpartition('.')[2], pattern)
+    if default_schema and '.' not in table:
+        table = f"{default_schema.lower()}.{table}"
+    return fnmatch.fnmatchcase(table, pattern)
+
+
+def scope(include: Optional[List[str]] = None, exclude: Optional[List[str]] = None) -> Scope:
+    """
+    Limit which database tables this schema file covers.
+
+    `scribe schema pull` only adds tables in scope, and `scribe schema status`
+    only reports in-scope tables as untracked. Tables declared with Table()
+    are always in scope.
+
+    Args:
+        include: Glob patterns ("orders", "hr_*", "reporting.*"). If given, only
+                 matching tables are in scope; if omitted, every table is.
+        exclude: Glob patterns removed from whatever include allows.
+
+    Patterns are case-insensitive. A pattern without a dot matches the table
+    name in any schema; on PostgreSQL, "reporting.*" covers one whole schema and
+    "public.orders" pins a single table.
+    """
+    selected = Scope(include, exclude)
+    _register('scope', selected)
+    return selected
+
+
 class SchemaDefinition:
     """Everything one schema file declared."""
 
@@ -229,6 +300,7 @@ class SchemaDefinition:
         self.indexes: List[Index] = []
         self.raw_sql: Dict[str, RawSQL] = {}
         self.unmanaged: Dict[str, str] = {}      # lowercased name -> name
+        self.scope: Optional[Scope] = None
 
     def add(self, kind: str, obj):
         if kind == 'table':
@@ -245,6 +317,10 @@ class SchemaDefinition:
             if obj.name in self.raw_sql:
                 raise SchemaError(f"raw_sql({obj.name!r}) is defined twice")
             self.raw_sql[obj.name] = obj
+        elif kind == 'scope':
+            if self.scope is not None:
+                raise SchemaError("scope() can only be used once per schema file")
+            self.scope = obj
 
     def _check_new_table_name(self, name: str):
         if name.lower() in self.tables or name.lower() in self.unmanaged:
@@ -274,6 +350,16 @@ class SchemaDefinition:
 
     def is_declared(self, table_name: str) -> bool:
         return table_name.lower() in self.tables or table_name.lower() in self.unmanaged
+
+    def in_scope(self, table_name: str, default_schema: Optional[str] = None) -> bool:
+        """Whether a database table is covered by this file: declared, or matched by scope()."""
+        if table_name.lower() in self.tables:
+            return True
+        return self.scope is None or self.scope.matches(table_name, default_schema)
+
+    def declares(self, table_name: str, default_schema: Optional[str] = None) -> bool:
+        """Whether a database table is declared with Table(); used to read only those tables."""
+        return table_name.lower() in self.tables
 
 
 # The schema file currently being loaded; see scribe.schema.loader.

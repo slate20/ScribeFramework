@@ -272,6 +272,10 @@ Or per-table, optionally with columns kept for documentation and the IDE:
 Table("audit_log", managed=False)
 ```
 
+### Scope
+
+On a large existing database, `scope(include=[...], exclude=[...])` limits which tables a schema file covers. It takes case-insensitive glob patterns: `orders*` matches a table name in any schema, and `reporting.*` matches a whole PostgreSQL schema. `pull` only adds in-scope tables, and `status` only reports in-scope tables as untracked. Declared tables are always in scope. The scope lives in the schema file rather than `scribe.json`: it describes the project, not the environment, and `scribe.json` often differs per deployment or holds secrets. `pull --include/--exclude` writes it into a new file.
+
 ### Seed data
 
 The DSL describes structure only. Seed and reference data stays in hand-written `.sql` migrations (as the new-project `tasks` rows do today).

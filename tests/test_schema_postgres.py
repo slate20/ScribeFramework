@@ -219,3 +219,22 @@ Table("broken", Column("id", "integer", ForeignKey("nowhere.id")))
     assert result.exit_code == 0, result.output
     assert db.has_table('audit_events')
     assert "No differences in 5 managed table(s)" in run('schema', 'diff', '--path', str(path)).output
+
+
+def test_scoped_pull_across_schemas(project):
+    path, db = project
+    db.execute("CREATE TABLE reporting.daily_sales_backup (LIKE reporting.daily_sales)")
+    db.execute("CREATE TABLE orders_backup (LIKE orders)")
+    db.commit()
+
+    result = run('schema', 'pull', '--include', 'orders*', '--include', 'reporting.*',
+                 '--exclude', '*_backup', '--path', str(path))
+
+    assert result.exit_code == 0, result.output
+    assert "(2 of 6 tables in scope)" in result.output
+    text = schema_text(path)
+    assert 'Table("orders",' in text and 'Table("reporting.daily_sales",' in text
+    assert '_backup' not in text.split('scope(')[1].split(')')[1]
+
+    result = run('schema', 'status', '--path', str(path))
+    assert "scope:       2 of 6 database table(s)" in result.output

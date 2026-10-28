@@ -65,6 +65,13 @@ raw_sql("view", "CREATE VIEW v AS SELECT 1")
     assert list(definition.raw_sql) == ['view']
 
 
+def test_dsl_needs_no_imports(tmp_path):
+    path = tmp_path / 'schemas' / 'schema_default.py'
+    write(path, 'scope(include=["t*"])\nTable("t", Column("id", "INTEGER"))\n')
+    definition = load_schema(str(path))
+    assert list(definition.tables) == ['t'] and definition.scope.include == ['t*']
+
+
 def test_reloading_does_not_duplicate(tmp_path):
     path = schema_file(tmp_path, 'Table("users", Column("id", "INTEGER"))\n')
     load_schema(path)
@@ -399,12 +406,13 @@ def test_pull_appends_without_touching_existing_declarations(tmp_path):
 def test_pull_restores_the_file_if_the_result_does_not_load(tmp_path):
     db = sqlite(tmp_path, "CREATE TABLE audit (id INTEGER)")
     path = str(tmp_path / 'schemas' / 'schema_default.py')
-    write(path, "# imports removed by hand\n")
+    # Shadowing a DSL name breaks the code pull appends
+    write(path, "Column = None\n")
 
     with pytest.raises(SchemaError):
         pull_into_file(path, 'default', 'sqlite', list(read_live_schema(db).values()))
     with open(path) as f:
-        assert f.read() == "# imports removed by hand\n"
+        assert f.read() == "Column = None\n"
 
 
 # === CLI ===
@@ -478,7 +486,7 @@ def test_diff_reports_schema_file_errors(tmp_path):
     result = run('schema', 'diff', '--path', path)
 
     assert result.exit_code != 0
-    assert "NameError" in result.output
+    assert "a managed table needs at least one Column" in result.output
 
 
 def test_diff_for_connection_without_schema_file(tmp_path):
@@ -496,3 +504,113 @@ def test_unknown_connection(tmp_path):
     result = run('schema', 'pull', '--database', 'nope', '--path', path)
     assert result.exit_code != 0
     assert "Database connection 'nope' not found" in result.output
+
+
+# === scope() ===
+
+from scribe.schema.dsl import Scope
+from scribe.schema.introspect import read_live_schema_counted
+from scribe.schema.writer import render_scope
+
+
+@pytest.mark.parametrize('pattern, table, schema, expected', [
+    ('orders', 'orders', None, True),
+    ('ORDERS', 'orders', None, True),
+    ('orders*', 'order_lines', None, False),
+    ('order*', 'order_lines', None, True),
+    # Patterns without a dot match the table name in any schema
+    ('*_backup', 'reporting.daily_backup', 'public', True),
+    ('orders', 'reporting.orders', 'public', True),
+    # Patterns with a dot match schema.table; unqualified tables are in the default schema
+    ('reporting.*', 'reporting.daily_sales', 'public', True),
+    ('reporting.*', 'daily_sales', 'public', False),
+    ('public.*', 'orders', 'public', True),
+    ('public.orders', 'reporting.orders', 'public', False),
+    ('*.audit_*', 'hr.audit_log', 'public', True),
+])
+def test_scope_patterns(pattern, table, schema, expected):
+    assert Scope(include=[pattern]).matches(table, schema) is expected
+
+
+def test_scope_include_and_exclude():
+    selected = Scope(include=["orders*", "reporting.*"], exclude=["*_backup"])
+    assert selected.matches("orders", "public")
+    assert not selected.matches("orders_backup", "public")
+    assert not selected.matches("reporting.daily_backup", "public")
+    assert selected.matches("reporting.daily", "public")
+    assert not selected.matches("customers", "public")
+    # Without include, everything not excluded is in scope
+    assert Scope(exclude=["tmp_*"]).matches("customers")
+    assert not Scope(exclude=["tmp_*"]).matches("tmp_import")
+
+
+def test_declared_tables_are_always_in_scope(tmp_path):
+    definition = load_schema(schema_file(tmp_path, """
+scope(include=["orders"])
+Table("legacy", Column("id", "INTEGER"), managed=False)
+"""))
+    assert definition.in_scope("orders") and definition.in_scope("legacy")
+    assert not definition.in_scope("customers")
+
+
+@pytest.mark.parametrize('body, message', [
+    ('scope(include=["a"])\nscope(include=["b"])', "only be used once"),
+    ('scope(include=[1])', "list of table name patterns"),
+    ('scope(include=[""])', "list of table name patterns"),
+])
+def test_invalid_scope(tmp_path, body, message):
+    with pytest.raises(SchemaError, match=message):
+        load_schema(schema_file(tmp_path, body))
+
+
+def test_render_scope():
+    assert render_scope(Scope(include=["orders", "hr_*"])) == 'scope(include=["orders", "hr_*"])\n'
+    assert render_scope(Scope(exclude=["*_backup"])) == 'scope(exclude=["*_backup"])\n'
+    long = render_scope(Scope(include=[f"table_number_{i}" for i in range(8)]))
+    assert long.startswith('scope(\n    include=[\n        "table_number_0",\n')
+
+
+def test_filter_is_applied_before_reading_tables(tmp_path):
+    db = sqlite(tmp_path, "CREATE TABLE orders (id INTEGER)", "CREATE TABLE customers (id INTEGER)",
+                "CREATE TABLE tmp_import (id INTEGER)")
+    read = []
+    original = db.get_columns
+    db.get_columns = lambda table: read.append(table) or original(table)
+
+    live, total = read_live_schema_counted(db, Scope(exclude=["tmp_*", "customers"]).matches)
+
+    assert list(live) == ['orders'] and total == 3
+    assert read == ['orders']
+
+
+def test_pull_with_include_writes_scope(tmp_path):
+    path = make_project(tmp_path)
+    sqlite(tmp_path, "CREATE TABLE orders (id INTEGER)", "CREATE TABLE order_lines (id INTEGER)",
+           "CREATE TABLE orders_backup (id INTEGER)", "CREATE TABLE customers (id INTEGER)")
+
+    result = run('schema', 'pull', '--include', 'order*', '--exclude', '*_backup', '--path', path)
+
+    assert result.exit_code == 0, result.output
+    assert "(2 of 4 tables in scope)" in result.output
+    definition = load_schema(str(tmp_path / 'schemas' / 'schema_default.py'))
+    assert sorted(definition.tables) == ['order_lines', 'orders']
+    assert definition.scope.include == ['order*'] and definition.scope.exclude == ['*_backup']
+
+    # Later pulls follow the scope in the file, and flags are refused
+    result = run('schema', 'pull', '--include', 'customers', '--path', path)
+    assert result.exit_code != 0 and "Edit (or add) the scope(" in result.output
+    assert "no new tables" in run('schema', 'pull', '--path', path).output
+
+
+def test_status_reports_scope_and_only_in_scope_untracked(tmp_path):
+    path = make_project(tmp_path)
+    sqlite(tmp_path, "CREATE TABLE orders (id INTEGER)", "CREATE TABLE order_notes (id INTEGER)",
+           "CREATE TABLE customers (id INTEGER)")
+    write(tmp_path / 'schemas' / 'schema_default.py', 'scope(include=["order*"])\nTable("orders", Column("id", "INTEGER"))\n')
+
+    result = run('schema', 'status', '--path', path)
+
+    assert result.exit_code == 0, result.output
+    assert "scope:       2 of 3 database table(s)" in result.output
+    assert "untracked:   1 table(s)" in result.output and "order_notes" in result.output
+    assert "customers" not in result.output

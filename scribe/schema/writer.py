@@ -14,7 +14,25 @@ from scribe.schema.introspect import LiveTable
 from scribe.schema.loader import load_schema
 from scribe.schema.normalize import default_to_python, python_literal
 
-IMPORT_LINE = "from scribe.schema import Table, Column, Index, ForeignKey, sql, raw_sql, unmanaged\n"
+IMPORT_LINE = "from scribe.schema import Table, Column, Index, ForeignKey, sql, raw_sql, unmanaged, scope\n"
+
+
+def render_scope(selected) -> str:
+    """Source for a scope() call, wrapped one pattern per line when long."""
+    args = []
+    for argument, patterns in (('include', selected.include), ('exclude', selected.exclude)):
+        if patterns:
+            args.append(f"{argument}=[{', '.join(json.dumps(p) for p in patterns)}]")
+    one_line = f"scope({', '.join(args)})"
+    if len(one_line) <= 100:
+        return one_line + "\n"
+    lines = ["scope("]
+    for argument, patterns in (('include', selected.include), ('exclude', selected.exclude)):
+        if patterns:
+            lines.append(f"    {argument}=[")
+            lines += [f"        {json.dumps(p)}," for p in patterns]
+            lines.append("    ],")
+    return '\n'.join(lines + [")"]) + "\n"
 
 
 def render_header(connection_name: str, dialect: str) -> str:
@@ -100,13 +118,14 @@ def write_init_file(path: str, connection_name: str, dialect: str) -> bool:
 
 
 def pull_into_file(path: str, connection_name: str, dialect: str,
-                   live_tables: List[LiveTable]) -> Tuple[List[str], List[str]]:
+                   live_tables: List[LiveTable], new_scope=None) -> Tuple[List[str], List[str]]:
     """
     Add live tables that the schema file doesn't declare yet.
 
     Args:
         path: schemas/schema_{name}.py (created if missing)
-        live_tables: Tables read from the database
+        live_tables: Tables read from the database (already limited to the file's scope)
+        new_scope: Scope to write into a new file (from `pull --include/--exclude`)
 
     Returns:
         (added table names, already-declared table names)
@@ -129,7 +148,10 @@ def pull_into_file(path: str, connection_name: str, dialect: str,
 
     blocks = '\n\n'.join(render_table(table, dialect) for table in added)
     if original is None:
-        content = render_header(connection_name, dialect) + '\n\n' + blocks
+        header = render_header(connection_name, dialect)
+        if new_scope is not None:
+            header += "\n" + render_scope(new_scope)
+        content = header + '\n\n' + blocks
     else:
         stamp = datetime.date.today().isoformat()
         content = original.rstrip('\n') + f"\n\n\n# --- Added by `scribe schema pull` on {stamp} ---\n\n" + blocks

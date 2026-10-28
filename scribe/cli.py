@@ -107,7 +107,8 @@ def _report_schema_changes(db, path):
             from scribe.schema.loader import load_schema
 
             definition = load_schema(file)
-            changes = diff_schema(definition, read_live_schema(adapter), target.dialect).changes
+            live = read_live_schema(adapter, definition.declares)
+            changes = diff_schema(definition, live, target.dialect).changes
             count = len(changes) + len(raw_sql_changes(definition, target.path))
         except Exception as e:
             adapter.rollback()
@@ -1554,14 +1555,19 @@ def _schema_connections(path, database):
     return {database: databases[database]}
 
 
-def _read_live_schema(name, block):
-    """Connect to a database and read its tables, with CLI-friendly errors."""
+def _read_live_schema(name, block, table_filter=None):
+    """
+    Connect to a database and read its tables, with CLI-friendly errors.
+
+    Returns:
+        (live tables accepted by table_filter, total number of tables in the database)
+    """
     from scribe.database import create_adapter
-    from scribe.schema.introspect import read_live_schema
+    from scribe.schema.introspect import read_live_schema_counted
 
     db = create_adapter(block)
     try:
-        return read_live_schema(db)
+        return read_live_schema_counted(db, table_filter)
     except NotImplementedError as e:
         raise click.ClickException(f"'{name}': {e}")
     finally:
@@ -1615,19 +1621,25 @@ def init(path):
 
 @schema_commands.command()
 @click.option('--database', default=None, help='Connection name (default: every connection)')
+@click.option('--include', multiple=True,
+              help='Table pattern to pull, e.g. "orders", "hr_*", "reporting.*" (repeatable; new schema files only)')
+@click.option('--exclude', multiple=True, help='Table pattern to leave out (repeatable; new schema files only)')
 @click.option('--path', default='.', help='Project directory')
-def pull(database, path):
+def pull(database, include, exclude, path):
     """
     Add tables from the live database to schemas/schema_{name}.py.
 
     Read-only on the database. New tables are written with managed=False;
-    tables the file already declares are never changed.
+    tables the file already declares are never changed. Only tables in the
+    file's scope() are pulled. When creating a new schema file, --include
+    and --exclude set that scope and are written into the file.
 
     Example:
         scribe schema pull
-        scribe schema pull --database analytics
+        scribe schema pull --database erp --include "orders" --include "reporting.*"
     """
     from scribe.schema import SchemaError
+    from scribe.schema.dsl import Scope
     from scribe.schema.loader import schema_file_path
     from scribe.schema.writer import pull_into_file
 
@@ -1636,18 +1648,38 @@ def pull(database, path):
         file = schema_file_path(path, name)
         rel = os.path.relpath(file, path)
 
-        live = _read_live_schema(name, block)
+        new_scope = None
+        if os.path.exists(file):
+            if include or exclude:
+                raise click.ClickException(
+                    f"{rel} already exists, so --include/--exclude can't change what it covers. "
+                    f"Edit (or add) the scope(include=[...], exclude=[...]) call in {rel} instead."
+                )
+            table_filter = _load_schema_file(file).in_scope
+        elif include or exclude:
+            try:
+                new_scope = Scope(list(include) or None, list(exclude) or None)
+            except SchemaError as e:
+                raise click.ClickException(str(e))
+            table_filter = new_scope.matches
+        else:
+            table_filter = None
+
+        live, total = _read_live_schema(name, block, table_filter)
         try:
-            added, skipped = pull_into_file(file, name, dialect, list(live.values()))
+            added, skipped = pull_into_file(file, name, dialect, list(live.values()), new_scope)
         except SchemaError as e:
             raise click.ClickException(f"{e}\n{rel} was left unchanged.")
 
+        in_scope = f" ({len(live)} of {total} tables in scope)" if len(live) < total else ""
         if added:
-            click.echo(f"✓ {name}: added {len(added)} table(s) to {rel} as managed=False")
+            click.echo(f"✓ {name}: added {len(added)} table(s) to {rel} as managed=False{in_scope}")
             for table in added:
                 click.echo(f"    {table}")
         else:
-            click.echo(f"  {name}: no new tables ({len(skipped)} already in {rel})")
+            click.echo(f"  {name}: no new tables ({len(skipped)} already in {rel}){in_scope}")
+        if new_scope is not None:
+            click.echo(f"  Wrote {new_scope!r} to {rel}; edit it there to change what later pulls add.")
 
     click.echo("\nSet managed=True on the tables Scribe should own, then run 'scribe schema diff'.")
 
@@ -1664,7 +1696,8 @@ def _change_symbol(change):
 class _SchemaCheck:
     """A connection's schema file compared with its database, for the schema commands."""
 
-    def __init__(self, name, block, file, definition=None, live=None, diff=None, target=None, raw=()):
+    def __init__(self, name, block, file, definition=None, live=None, diff=None, target=None, raw=(),
+                 total_tables=0):
         self.name = name
         self.block = block
         self.dialect = block.get('type', 'sqlite').lower()
@@ -1674,15 +1707,21 @@ class _SchemaCheck:
         self.diff = diff
         self.target = target            # MigrationTarget, or None when migrations are disabled
         self.raw = list(raw)            # raw_sql blocks not yet in a generated migration
+        self.total_tables = total_tables  # tables in the database, in scope or not
 
     @property
     def change_count(self):
         return len(self.diff.changes) + len(self.raw) if self.diff else 0
 
 
-def _check_schemas(path, database):
+def _check_schemas(path, database, untracked=False):
     """
     Load and diff each connection's schema file.
+
+    Args:
+        untracked: Also read in-scope tables the file doesn't declare, so the diff
+                   can list them as untracked (for status). Otherwise only declared
+                   tables are read, which is all diff/generate/apply compare.
 
     Yields:
         _SchemaCheck per connection (with definition=None when it has no schema file)
@@ -1709,11 +1748,12 @@ def _check_schemas(path, database):
             continue
 
         definition = _load_schema_file(file)
-        live = _read_live_schema(name, block)
+        live, total = _read_live_schema(name, block, definition.in_scope if untracked else definition.declares)
         dialect = block.get('type', 'sqlite').lower()
         # raw_sql blocks are tracked through generated migrations, so only connections with migrations have them
         raw = raw_sql_changes(definition, target.path) if target else []
-        yield _SchemaCheck(name, block, file, definition, live, diff_schema(definition, live, dialect), target, raw)
+        yield _SchemaCheck(name, block, file, definition, live, diff_schema(definition, live, dialect), target, raw,
+                           total_tables=total)
 
 
 @schema_commands.command()
@@ -1781,7 +1821,7 @@ def schema_status(database, path):
     if _no_schemas_dir(path):
         return
 
-    for check in _check_schemas(path, database):
+    for check in _check_schemas(path, database, untracked=True):
         name = check.name
         rel = os.path.relpath(check.file, path)
         if check.definition is None:
@@ -1800,6 +1840,9 @@ def schema_status(database, path):
                 line += f", {len(changed)} with changes ({', '.join(changed)})"
         click.echo(line)
         click.echo(f"  unmanaged:   {len(result.unmanaged)} table(s)")
+        if check.definition.scope is not None:
+            click.echo(f"  scope:       {len(check.live)} of {check.total_tables} database table(s) "
+                       f"— {check.definition.scope!r}")
 
         if result.untracked:
             click.echo(f"  untracked:   {len(result.untracked)} table(s) in the database aren't in {rel}: "

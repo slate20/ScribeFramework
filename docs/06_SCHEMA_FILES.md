@@ -22,6 +22,14 @@ scribe schema diff
 
 Running `pull` again later only adds tables the file doesn't mention yet. Tables you've already declared, edited, or marked `unmanaged()` are never rewritten.
 
+For a large database where your app only uses some of the tables, limit the first pull, and the scope is saved in the file:
+
+```bash
+scribe schema pull --database erp --include "customers" --include "orders*" --include "reporting.*" --exclude "*_backup"
+```
+
+See [`scope()`](#scopeincludenone-excludenone) below.
+
 ### Starting empty
 
 ```bash
@@ -77,6 +85,26 @@ Declares an index. Composite unique constraints are declared as unique indexes.
 ### `unmanaged(*names)`
 
 Lists tables that exist but that Scribe should ignore entirely. `diff` and `status` won't report them as untracked.
+
+### `scope(include=None, exclude=None)`
+
+Limits which database tables this file covers. On a database with hundreds of tables, this keeps the file to the ones your app uses.
+
+```python
+scope(
+    include=["customers", "orders*", "reporting.*"],
+    exclude=["*_backup", "*_old"],
+)
+```
+
+- `include`: if given, only matching tables are in scope. If omitted, every table is.
+- `exclude`: removes matches from whatever `include` allows.
+- Patterns are case-insensitive globs. A pattern without a dot matches the table name in any schema (`*_backup`). A pattern with a dot matches `schema.table` on PostgreSQL: `reporting.*` covers a whole schema, and `public.orders` a single table.
+- Tables declared with `Table(...)` are always in scope, whether or not a pattern matches them.
+
+Scope affects `pull`, which only adds in-scope tables, and `status`, which only reports in-scope tables as untracked and shows how many of the database's tables are in scope. `diff`, `generate`, and `apply` only ever look at declared tables.
+
+`pull --include/--exclude` writes this call into a new schema file. Once the file exists, change the scope by editing the call.
 
 ### `raw_sql(name, sql)`
 
@@ -171,7 +199,8 @@ scribe schema apply --dry-run       # print it instead
 
 ```bash
 scribe schema init                         # empty schema file per connection
-scribe schema pull     [--database name]   # add live tables to the schema file (read-only on the database)
+scribe schema pull     [--database name] [--include PATTERN] [--exclude PATTERN]
+                                           # add live tables to the schema file (read-only on the database)
 scribe schema diff     [--database name]   # compare managed tables with the database (read-only)
 scribe schema status   [--database name]   # summary (read-only)
 scribe schema generate [--database name] [--name NAME] [--dry-run] [--force]

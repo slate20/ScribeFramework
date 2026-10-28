@@ -12,6 +12,8 @@ from scribe.schema.dsl import SchemaDefinition, SchemaError
 
 SCHEMAS_DIR = 'schemas'
 
+DSL_NAMES = ('Table', 'Column', 'Index', 'ForeignKey', 'sql', 'raw_sql', 'unmanaged', 'scope')
+
 
 def schemas_dir(project_path: str) -> str:
     return os.path.join(project_path, SCHEMAS_DIR)
@@ -45,6 +47,9 @@ def load_schema(path: str) -> SchemaDefinition:
         if spec is None or spec.loader is None:
             raise SchemaError(f"{path}: not a Python file")
         module = importlib.util.module_from_spec(spec)
+        # The DSL is available without imports, so a file written by an older
+        # `scribe schema pull` can use newer calls such as scope()
+        module.__dict__.update({name: getattr(dsl, name) for name in DSL_NAMES})
         spec.loader.exec_module(module)
     except SchemaError as e:
         raise SchemaError(f"{_location(path, e)}{e}") from e
