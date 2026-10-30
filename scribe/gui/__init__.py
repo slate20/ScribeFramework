@@ -6,6 +6,7 @@ for developing ScribeEngine applications. It includes:
 - Code editor with .stpl syntax highlighting (Monaco Editor)
 - Live preview panel for real-time template rendering
 - Database browser for visual DB exploration
+- Schema panel: schemas/*.py compared with the live database
 - File management UI
 - Route explorer
 
@@ -47,7 +48,7 @@ def _register_routes(bp):
 
     Note: Blueprint is exempt from CSRF globally (see create_blueprint below).
     """
-    from scribe.gui import routes
+    from scribe.gui import routes, schema_routes
 
     # Main pages
     bp.add_url_rule('/', 'index', routes.index, methods=['GET'])
@@ -71,6 +72,24 @@ def _register_routes(bp):
                     routes.get_database_tables, methods=['GET'])
     bp.add_url_rule('/api/database/<connection_name>/table/<table_name>', 'get_table_data',
                     routes.get_table_data, methods=['GET'])
+
+    # API - Schema files
+    bp.add_url_rule('/api/schema', 'list_schema_connections',
+                    schema_routes.list_schema_connections, methods=['GET'])
+    bp.add_url_rule('/api/schema/<connection_name>', 'get_schema',
+                    schema_routes.get_schema, methods=['GET'])
+    bp.add_url_rule('/api/schema/<connection_name>/init', 'init_schema',
+                    schema_routes.init_schema, methods=['POST'])
+    bp.add_url_rule('/api/schema/<connection_name>/pull', 'pull_schema',
+                    schema_routes.pull_schema, methods=['POST'])
+    bp.add_url_rule('/api/schema/<connection_name>/managed', 'set_managed',
+                    schema_routes.set_managed, methods=['POST'])
+    bp.add_url_rule('/api/schema/<connection_name>/generate', 'generate_schema_migration',
+                    schema_routes.generate_schema_migration, methods=['POST'])
+    bp.add_url_rule('/api/schema/<connection_name>/migrate', 'run_pending_migrations',
+                    schema_routes.run_pending_migrations, methods=['POST'])
+    bp.add_url_rule('/api/schema/<connection_name>/apply', 'apply_schema',
+                    schema_routes.apply_schema, methods=['POST'])
 
 
 __all__ = ['create_blueprint']

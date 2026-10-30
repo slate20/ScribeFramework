@@ -5,7 +5,7 @@ These classes represent the parsed structure of .stpl files.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, List, Optional
 
 
 @dataclass
@@ -42,6 +42,9 @@ class Route:
 
     Flags:
     - no_layout: When True, the template is rendered as-is without being wrapped in base.stpl.
+    - csrf_exempt: When True, this route is exempted from Flask-WTF's CSRF
+      protection (see scribe/app.py register_routes()). Intended for
+      bearer-token/API routes that can't carry the session-bound CSRF cookie.
     """
     path: str
     methods: List[str] = field(default_factory=lambda: ['GET'])
@@ -52,6 +55,15 @@ class Route:
     source_file: Optional[str] = None
     no_layout: bool = False
     is_sse: bool = False
+    csrf_exempt: bool = False
+
+    # Precompiled code object for this route's Python block (a
+    # types.CodeType produced by scribe.execution.context.compile_route_code
+    # and reloaded via marshal). Set only when a route is reconstructed from
+    # a build tool's precompiled artifacts instead of parsed from a .stpl
+    # file; python_code is None in that case. See scribe/app.py
+    # create_route_handler().
+    compiled_code: Optional[Any] = field(default=None, repr=False, compare=False)
 
     # Extracted from path pattern
     path_parameters: List[str] = field(default_factory=list)

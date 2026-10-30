@@ -18,8 +18,6 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
-        # Include project template files
-        ('scribe/templates', 'scribe/templates'),
         # Include GUI IDE templates and static files
         ('scribe/gui/templates', 'scribe/gui/templates'),
         ('scribe/gui/static', 'scribe/gui/static'),
@@ -37,8 +35,12 @@ a = Analysis(
         'scribe.helpers',
         'scribe.loader',
         'scribe.migrations',
+        'scribe.scaffold',
+        'scribe.schema',
+        'scribe.schema.actions',
         'scribe.gui',
         'scribe.gui.routes',
+        'scribe.gui.schema_routes',
         'flask',
         'jinja2',
         'werkzeug',

@@ -1,10 +1,10 @@
 """
 Database abstraction layer for ScribeEngine.
 
-Provides a unified interface across SQLite, PostgreSQL, MySQL, and MSSQL.
+Provides a unified interface across SQLite, PostgreSQL, and MSSQL.
 """
 
-from scribe.database.base import DatabaseAdapter, Row
+from scribe.database.base import DatabaseAdapter, Row, ColumnInfo, IndexInfo, ForeignKeyInfo
 from scribe.database.sqlite import SQLiteAdapter
 from scribe.database.query_builder import QueryBuilder
 from scribe.database.manager import DatabaseManager
@@ -17,7 +17,7 @@ def create_adapter(config: dict) -> DatabaseAdapter:
     Args:
         config: Database configuration dict
             {
-                'type': 'sqlite'|'postgresql'|'mysql'|'mssql',
+                'type': 'sqlite'|'postgresql'|'mssql',
                 'database': 'path/to/db.sqlite' or database name,
                 ... other connection parameters ...
             }
@@ -38,8 +38,9 @@ def create_adapter(config: dict) -> DatabaseAdapter:
         from scribe.database.postgresql import PostgreSQLAdapter
         return PostgreSQLAdapter(config)
     elif db_type == 'mysql':
-        from scribe.database.mysql import MySQLAdapter
-        return MySQLAdapter(config)
+        raise ValueError(
+            "MySQL is not supported yet. Supported database types: sqlite, postgresql, mssql"
+        )
     elif db_type == 'mssql':
         from scribe.database.mssql import MSSQLAdapter
         return MSSQLAdapter(config)
@@ -50,6 +51,9 @@ def create_adapter(config: dict) -> DatabaseAdapter:
 __all__ = [
     "DatabaseAdapter",
     "Row",
+    "ColumnInfo",
+    "IndexInfo",
+    "ForeignKeyInfo",
     "SQLiteAdapter",
     "QueryBuilder",
     "DatabaseManager",

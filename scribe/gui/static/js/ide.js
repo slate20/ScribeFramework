@@ -604,6 +604,18 @@ function initEventListeners() {
         if (e.target.value) loadTableData(e.target.value);
     });
 
+    // Schema controls
+    document.getElementById('schema-connection-select').addEventListener('change', (e) => {
+        if (e.target.value) {
+            SchemaPanel.connection = e.target.value;
+            SchemaPanel.expanded.clear();
+            loadSchema();
+        }
+    });
+    document.getElementById('schema-refresh-btn').addEventListener('click', loadSchemaConnections);
+    document.getElementById('schema-migration-confirm-btn').addEventListener('click', confirmSchemaMigration);
+    document.getElementById('schema-migration-cancel-btn').addEventListener('click', () => hideModal('schema-migration-modal'));
+
     // Resizers
     initResizers();
 }
@@ -833,6 +845,16 @@ function categorizeFiles(fileTree) {
             return;
         }
 
+        // Data (schemas/ directory - schema files)
+        if (fullPath.startsWith('schemas/') || fullPath === 'schemas') {
+            if (node.type === 'file' && node.extension === '.py') {
+                addToCategoryFolder(categories.data, node, fullPath, '');
+            } else if (node.type === 'directory' && node.children) {
+                node.children.forEach(child => processNode(child, fullPath));
+            }
+            return;
+        }
+
         // Style (static/css/ directory - .css files)
         if (fullPath.startsWith('static/css/') || fullPath === 'static/css' || fullPath === 'static') {
             if (node.type === 'file' && node.extension === '.css') {
@@ -857,6 +879,7 @@ function categorizeFiles(fileTree) {
 
             const parts = relativePath.split('/');
             let current = category.folders;
+            let folder = null;
 
             // Build folder structure
             for (let i = 0; i < parts.length - 1; i++) {
@@ -869,26 +892,17 @@ function categorizeFiles(fileTree) {
                         collapsed: false
                     };
                 }
-                current = current[part].subfolders;
+                folder = current[part];
+                current = folder.subfolders;
             }
 
-            // Add file to parent folder or root
-            if (parts.length === 1) {
+            if (folder) {
+                // File in subfolder
+                folder.files.push({ ...node, path: fullPath });
+            } else {
                 // File directly in root (e.g., lib/helpers.py)
                 if (!category.rootFiles) category.rootFiles = [];
                 category.rootFiles.push({ ...node, path: fullPath });
-            } else {
-                // File in subfolder
-                const parentKey = parts[parts.length - 2];
-                if (!current[parentKey]) {
-                    current[parentKey] = {
-                        name: parentKey,
-                        files: [],
-                        subfolders: {},
-                        collapsed: false
-                    };
-                }
-                current[parentKey].files.push({ ...node, path: fullPath });
             }
         }
     }
@@ -1330,6 +1344,10 @@ async function saveCurrentFile() {
             fileInfo.modified = false;
 
             document.getElementById('save-btn').disabled = true;
+            markFileAsModified();  // clears the tab's unsaved marker
+
+            // Saving a schema file re-compares it with the database
+            if (isSchemaPanelShowing(IDE.currentFile)) loadSchema();
 
             // Auto-refresh preview after save (if preview is loaded)
             const iframe = document.getElementById('preview-frame');
@@ -1537,6 +1555,8 @@ function switchPanel(panelName) {
     // Load data for the panel if needed
     if (panelName === 'database') {
         loadDatabaseTables();
+    } else if (panelName === 'schema') {
+        loadSchemaConnections();
     } else if (panelName === 'routes') {
         loadRoutes();
     }
@@ -1703,6 +1723,443 @@ async function loadTableData(tableName) {
 }
 
 /**
+ * Schema panel: schemas/schema_{name}.py compared with the live database.
+ * Actions mirror `scribe schema pull / generate / apply`.
+ */
+const SchemaPanel = {
+    connection: null,
+    data: null,               // last GET /api/schema/<connection> response
+    expanded: new Set(),      // table names whose details are open
+    pendingAction: null       // 'generate' | 'apply' while the preview modal is open
+};
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[ch]);
+}
+
+function isSchemaPanelShowing(filepath) {
+    const panel = document.getElementById('schema-panel');
+    return panel.classList.contains('active') && SchemaPanel.data && SchemaPanel.data.file === filepath;
+}
+
+async function schemaRequest(url, body = null) {
+    const options = body === null ? {} : {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken() },
+        body: JSON.stringify(body)
+    };
+    const response = await fetch(`${API_BASE}${url}`, options);
+    let data;
+    try {
+        data = await response.json();
+    } catch (e) {
+        throw new Error(`HTTP ${response.status}`);
+    }
+    // A 200 can carry `error` too (a schema file that doesn't load), which the panel renders
+    if (!response.ok) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    return data;
+}
+
+/**
+ * Load connections into the selector, then the selected connection's schema
+ */
+async function loadSchemaConnections() {
+    const select = document.getElementById('schema-connection-select');
+    try {
+        const data = await schemaRequest('/api/schema');
+        const names = data.connections.map(c => c.name);
+        if (names.length === 0) {
+            select.innerHTML = '<option value="">No databases configured</option>';
+            return;
+        }
+        select.innerHTML = names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
+        if (!names.includes(SchemaPanel.connection)) {
+            SchemaPanel.connection = names.includes('default') ? 'default' : names[0];
+        }
+        select.value = SchemaPanel.connection;
+        await loadSchema();
+    } catch (error) {
+        select.innerHTML = '<option value="">Error</option>';
+        renderSchemaMessage(`Error loading connections: ${error.message}`, true);
+    }
+}
+
+async function loadSchema() {
+    if (!SchemaPanel.connection) return;
+    const name = SchemaPanel.connection;
+    try {
+        const data = await schemaRequest(`/api/schema/${encodeURIComponent(name)}`);
+        if (name !== SchemaPanel.connection) return;  // switched while loading
+        SchemaPanel.data = data;
+        renderSchema();
+    } catch (error) {
+        renderSchemaMessage(error.message, true);
+    }
+}
+
+function renderSchemaMessage(message, isError = false) {
+    document.getElementById('schema-content').innerHTML =
+        `<p class="placeholder-text${isError ? ' error' : ''}">${escapeHtml(message)}</p>`;
+}
+
+const SCHEMA_STATUS_LABELS = {
+    in_sync: 'in sync',
+    changed: 'changed',
+    missing: 'not in database',
+    unmanaged: 'unmanaged'
+};
+
+function renderSchema() {
+    const data = SchemaPanel.data;
+    const content = document.getElementById('schema-content');
+    const fileInfo = IDE.openFiles.get(data.file);
+    const unsaved = fileInfo && fileInfo.modified
+        ? `<div class="schema-notice">${escapeHtml(data.file)} has unsaved changes. This compares the saved file; save to update it.</div>`
+        : '';
+
+    let html = `
+        <div class="schema-header">
+            <a href="#" class="schema-file-link" data-line="">${escapeHtml(data.file)}</a>
+            <span class="schema-meta">${escapeHtml(data.dialect)}${data.migrations
+                ? ` · ${escapeHtml(data.migrations)}/ · auto_migrate ${data.auto_migrate ? 'on' : 'off'}`
+                : ' · migrations disabled'}</span>
+        </div>
+        ${unsaved}`;
+
+    if (!data.exists) {
+        html += `
+            <div class="schema-empty">
+                <p>No schema file for '${escapeHtml(data.name)}' yet. Schema files are optional; without one
+                   this connection uses hand-written .sql migrations only.</p>
+                <div class="schema-actions">
+                    <button class="btn btn-sm btn-primary" data-schema-action="pull"
+                        title="Write the database's existing tables into ${escapeHtml(data.file)} as managed=False">Pull from database</button>
+                    <button class="btn btn-sm" data-schema-action="init">Create empty file</button>
+                </div>
+            </div>`;
+        content.innerHTML = html;
+        bindSchemaEvents(content);
+        return;
+    }
+
+    if (data.error) {
+        const match = data.error.match(/\.py:(\d+):/);
+        html += `
+            <div class="schema-error">
+                <pre>${escapeHtml(data.error)}</pre>
+                <a href="#" class="schema-file-link" data-line="${match ? match[1] : ''}">Open in editor</a>
+            </div>`;
+        content.innerHTML = html;
+        bindSchemaEvents(content);
+        return;
+    }
+
+    // Summary and actions
+    const counts = data.counts;
+    const chips = [];
+    if (counts.additive) chips.push(`<span class="schema-chip additive">${counts.additive} additive</span>`);
+    if (counts.review) chips.push(`<span class="schema-chip review">${counts.review} need review</span>`);
+    if (counts.destructive) chips.push(`<span class="schema-chip destructive">${counts.destructive} would drop data</span>`);
+    if (!counts.additive && !counts.review) chips.push('<span class="schema-chip in-sync">database matches the schema file</span>');
+    if (data.pending.length) chips.push(`<span class="schema-chip review" title="${escapeHtml(data.pending.join('\n'))}">${data.pending.length} pending migration(s)</span>`);
+
+    // Previews are only meaningful against an up-to-date database
+    const pendingBlock = data.pending.length
+        ? `Run the ${data.pending.length} pending migration(s) first; the comparison is against the live database`
+        : null;
+
+    const hasChanges = counts.additive + counts.review > 0;
+    const generateBlocked = data.generate_refusal || pendingBlock;
+    const applyBlocked = data.apply_refusal || pendingBlock;
+    const generateTitle = generateBlocked || 'Preview a migration with every change; review-only changes are commented out';
+    const applyTitle = applyBlocked || 'Preview, then write and run a migration with the additive changes';
+    const migrateButton = data.pending.length ? `
+            <button class="btn btn-sm btn-primary" data-schema-action="migrate"
+                title="${escapeHtml(data.pending.join('\n'))}">Run pending migrations</button>` : '';
+    html += `
+        <div class="schema-summary">${chips.join('')}</div>
+        <div class="schema-actions">
+            ${migrateButton}
+            <button class="btn btn-sm" data-schema-action="pull"
+                title="Add database tables this file doesn't declare yet, as managed=False">Pull</button>
+            <button class="btn btn-sm" data-schema-action="generate" ${generateBlocked || !hasChanges ? 'disabled' : ''}
+                title="${escapeHtml(generateTitle)}">Generate migration</button>
+            <button class="btn btn-sm btn-primary" data-schema-action="apply" ${applyBlocked || !counts.additive ? 'disabled' : ''}
+                title="${escapeHtml(applyTitle)}">Apply</button>
+        </div>`;
+    if (data.scope) {
+        html += `<div class="schema-meta schema-scope">${escapeHtml(data.scope)} — ${data.tables_in_scope} of ${data.total_tables} database tables</div>`;
+    }
+
+    // Tables
+    if (data.tables.length === 0) {
+        html += '<p class="placeholder-text">No tables declared yet. Pull adds the tables already in the database.</p>';
+    }
+    html += '<div class="schema-tables">';
+    data.tables.forEach(table => { html += renderSchemaTable(table); });
+    html += '</div>';
+
+    if (data.untracked.length) {
+        html += `
+            <div class="schema-section">
+                <h4>In the database, not in the file (${data.untracked.length})</h4>
+                <div class="schema-names">${data.untracked.map(escapeHtml).join(', ')}</div>
+                <div class="schema-meta">Pull adds them as managed=False.</div>
+            </div>`;
+    }
+    if (data.unmanaged.length) {
+        html += `
+            <div class="schema-section">
+                <h4>unmanaged() (${data.unmanaged.length})</h4>
+                <div class="schema-names">${data.unmanaged.map(escapeHtml).join(', ')}</div>
+            </div>`;
+    }
+    if (data.raw_sql_blocks || data.raw_sql.length) {
+        const rows = data.raw_sql.map(r =>
+            `<div class="schema-change ${r.status === 'new' ? 'additive' : 'review'}">${r.status === 'new' ? '+' : '!'} ${escapeHtml(r.name)}: ${escapeHtml(r.status)} since the last generated migration</div>`
+        ).join('');
+        html += `
+            <div class="schema-section">
+                <h4>raw_sql (${data.raw_sql_blocks} block(s))</h4>
+                ${rows || '<div class="schema-meta">All in migrations.</div>'}
+            </div>`;
+    }
+
+    content.innerHTML = html;
+    bindSchemaEvents(content);
+}
+
+function renderSchemaTable(table) {
+    const open = SchemaPanel.expanded.has(table.name);
+    const changes = table.changes.map(c => {
+        const kind = c.additive ? 'additive' : (c.destructive ? 'destructive' : 'review');
+        const target = c.column ? `${escapeHtml(c.column)}: ` : '';
+        return `<div class="schema-change ${kind}">${c.symbol} ${target}${escapeHtml(c.description)}</div>`;
+    }).join('');
+
+    let details = '';
+    if (open) {
+        const rows = table.columns.map(col => {
+            const flags = [];
+            if (col.primary_key) flags.push('PK');
+            if (col.autoincrement) flags.push('auto');
+            if (!col.nullable && !col.primary_key) flags.push('NOT NULL');
+            if (col.unique) flags.push('UNIQUE');
+            if (col.foreign_key) flags.push(`→ ${escapeHtml(col.foreign_key)}`);
+            if (col.default !== null) flags.push(`default ${escapeHtml(col.default)}`);
+            return `<tr><td>${escapeHtml(col.name)}</td><td>${escapeHtml(col.type)}</td><td>${flags.join(' · ')}</td></tr>`;
+        }).join('');
+        const indexes = table.indexes.map(i =>
+            `<div class="schema-meta">${i.unique ? 'unique index' : 'index'} ${escapeHtml(i.name)} (${i.columns.map(escapeHtml).join(', ')})</div>`
+        ).join('');
+        details = table.columns.length
+            ? `<table class="db-table schema-columns"><thead><tr><th>Column</th><th>Type</th><th></th></tr></thead><tbody>${rows}</tbody></table>${indexes}`
+            : '<div class="schema-meta">No columns declared (unmanaged tables may omit them).</div>';
+    }
+
+    return `
+        <div class="schema-table ${table.status}">
+            <div class="schema-table-header">
+                <button class="schema-expand" data-table="${escapeHtml(table.name)}">${open ? '▾' : '▸'}</button>
+                <a href="#" class="schema-file-link schema-table-name" data-line="${table.line || ''}"
+                   title="Open the declaration">${escapeHtml(table.name)}</a>
+                <span class="schema-status ${table.status}">${SCHEMA_STATUS_LABELS[table.status]}</span>
+                <label class="schema-managed" title="managed=True: Scribe generates migrations for this table">
+                    <input type="checkbox" data-managed-table="${escapeHtml(table.name)}" ${table.managed ? 'checked' : ''}> managed
+                </label>
+            </div>
+            ${changes ? `<div class="schema-changes">${changes}</div>` : ''}
+            ${open ? `<div class="schema-table-details">${details}</div>` : ''}
+        </div>`;
+}
+
+function bindSchemaEvents(content) {
+    content.querySelectorAll('.schema-file-link').forEach(link => {
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            openFileAtLine(SchemaPanel.data.file, parseInt(link.dataset.line, 10) || null);
+        });
+    });
+    content.querySelectorAll('.schema-expand').forEach(button => {
+        button.addEventListener('click', () => {
+            const name = button.dataset.table;
+            if (SchemaPanel.expanded.has(name)) SchemaPanel.expanded.delete(name);
+            else SchemaPanel.expanded.add(name);
+            renderSchema();
+        });
+    });
+    content.querySelectorAll('[data-managed-table]').forEach(box => {
+        box.addEventListener('change', () => setTableManaged(box.dataset.managedTable, box.checked, box));
+    });
+    content.querySelectorAll('[data-schema-action]').forEach(button => {
+        button.addEventListener('click', () => {
+            const action = button.dataset.schemaAction;
+            if (action === 'pull' || action === 'init') runSchemaFileAction(action);
+            else if (action === 'migrate') runPendingMigrations();
+            else previewSchemaMigration(action);
+        });
+    });
+}
+
+/**
+ * Refuse to rewrite the schema file under unsaved editor changes
+ */
+function schemaFileHasUnsavedChanges() {
+    const fileInfo = IDE.openFiles.get(SchemaPanel.data.file);
+    if (fileInfo && fileInfo.modified) {
+        setStatus(`Save ${SchemaPanel.data.file} first; it has unsaved changes`, 'error');
+        return true;
+    }
+    return false;
+}
+
+async function runSchemaFileAction(action) {
+    if (schemaFileHasUnsavedChanges()) return;
+    try {
+        const data = await schemaRequest(`/api/schema/${encodeURIComponent(SchemaPanel.connection)}/${action}`, {});
+        await reloadOpenFile(data.file);
+        await loadFileTree();
+        setStatus(data.message);
+        await loadSchema();
+    } catch (error) {
+        setStatus(error.message, 'error');
+    }
+}
+
+async function runPendingMigrations() {
+    try {
+        const data = await schemaRequest(`/api/schema/${encodeURIComponent(SchemaPanel.connection)}/migrate`, {});
+        setStatus(data.message);
+        await loadSchema();
+        loadTablesForConnection(window.currentDbConnection || 'default');
+    } catch (error) {
+        setStatus(error.message, 'error');
+        await loadSchema();
+    }
+}
+
+async function setTableManaged(table, managed, checkbox) {
+    if (schemaFileHasUnsavedChanges()) {
+        checkbox.checked = !managed;
+        return;
+    }
+    try {
+        const data = await schemaRequest(`/api/schema/${encodeURIComponent(SchemaPanel.connection)}/managed`,
+            { table, managed });
+        setStatus(data.message);
+        await reloadOpenFile(data.file);
+        await loadSchema();
+    } catch (error) {
+        checkbox.checked = !managed;
+        setStatus(error.message, 'error');
+    }
+}
+
+/**
+ * Generate or apply: show the SQL first, then write (and for apply, run) it on confirm
+ */
+async function previewSchemaMigration(action) {
+    const url = `/api/schema/${encodeURIComponent(SchemaPanel.connection)}/${action}`;
+    try {
+        const data = await schemaRequest(url, { dry_run: true });
+        if (!data.sql) {
+            setStatus(data.message);
+            return;
+        }
+        SchemaPanel.pendingAction = action;
+        const confirmBtn = document.getElementById('schema-migration-confirm-btn');
+        let summary;
+        if (action === 'apply') {
+            document.getElementById('schema-migration-title').textContent = 'Apply additive changes';
+            summary = `${data.live} statement(s) will be written to a new migration file and run now.`;
+            if (data.left_out) summary += ` ${data.left_out} change(s) need review and are left out; Generate writes them.`;
+            confirmBtn.textContent = 'Write and run';
+            confirmBtn.dataset.force = '';
+        } else {
+            document.getElementById('schema-migration-title').textContent = 'Generate migration';
+            summary = `${data.live} statement(s) will run, ${data.review} change(s) are commented out under -- REVIEW.`;
+            if (data.live === 0) summary += ' Nothing would run; write it only to edit the SQL by hand.';
+            confirmBtn.textContent = data.live === 0 ? 'Write anyway' : 'Write file';
+            confirmBtn.dataset.force = data.live === 0 ? '1' : '';
+        }
+        document.getElementById('schema-migration-summary').textContent = summary;
+        document.getElementById('schema-migration-sql').textContent = data.sql;
+        document.getElementById('schema-migration-name').value = '';
+        showModal('schema-migration-modal');
+    } catch (error) {
+        setStatus(error.message, 'error');
+    }
+}
+
+async function confirmSchemaMigration() {
+    const action = SchemaPanel.pendingAction;
+    const confirmBtn = document.getElementById('schema-migration-confirm-btn');
+    const body = { name: document.getElementById('schema-migration-name').value.trim() };
+    if (confirmBtn.dataset.force) body.force = true;
+
+    confirmBtn.disabled = true;
+    try {
+        const data = await schemaRequest(`/api/schema/${encodeURIComponent(SchemaPanel.connection)}/${action}`, body);
+        hideModal('schema-migration-modal');
+        await loadFileTree();
+        // A generated migration should be reviewed before it runs
+        if (action === 'generate' && data.file) await openFile(data.file);
+        setStatus(data.message);
+        await loadSchema();
+        if (action === 'apply') loadTablesForConnection(window.currentDbConnection || 'default');
+    } catch (error) {
+        setStatus(error.message, 'error');
+        document.getElementById('schema-migration-summary').textContent = error.message;
+    } finally {
+        confirmBtn.disabled = false;
+    }
+}
+
+/**
+ * Open a file and put the cursor on a line
+ */
+async function openFileAtLine(filepath, line) {
+    await openFile(filepath);
+    if (!line) return;
+    const reveal = (attempt = 0) => {
+        if (IDE.currentFile !== filepath || !IDE.editorReady || !IDE.editor.revealLineInCenter) {
+            if (attempt < 50) setTimeout(() => reveal(attempt + 1), 100);
+            return;
+        }
+        IDE.editor.revealLineInCenter(line);
+        IDE.editor.setPosition({ lineNumber: line, column: 1 });
+        IDE.editor.focus();
+    };
+    reveal();
+}
+
+/**
+ * Re-read a file the server changed, if it's open without unsaved edits
+ */
+async function reloadOpenFile(filepath) {
+    const fileInfo = IDE.openFiles.get(filepath);
+    if (!fileInfo || fileInfo.modified) return;
+    try {
+        const response = await fetch(`${API_BASE}/api/file/${filepath}`);
+        const data = await response.json();
+        if (data.content === null || data.content === undefined) return;
+        fileInfo.content = data.content;
+        fileInfo.originalContent = data.content;
+        if (IDE.currentFile === filepath && IDE.editorReady) {
+            const position = IDE.editor.getPosition ? IDE.editor.getPosition() : null;
+            IDE.editor.setValue(data.content);
+            if (position) IDE.editor.setPosition(position);
+        }
+    } catch (error) {
+        console.error('IDE: Error reloading file:', error);
+    }
+}
+
+/**
  * Load routes
  */
 async function loadRoutes() {
@@ -1766,6 +2223,7 @@ function updateCursorPosition(position) {
 function setStatus(message, type = 'info') {
     const statusEl = document.getElementById('status-message');
     statusEl.textContent = message;
+    statusEl.title = message;  // long messages are truncated in the bar
 
     // Could add color coding based on type
     if (type === 'error') {

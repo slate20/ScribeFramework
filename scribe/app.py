@@ -20,28 +20,48 @@ from jinja2 import Template
 
 from scribe.parser import TemplateParser
 from scribe.database import create_adapter, DatabaseManager
+from scribe.migrations.config import get_databases_config
 from scribe.execution import ExecutionContext
-from scribe.loader import load_helper_modules
+from scribe.loader import load_helper_modules, load_compiled_helper_modules
 from scribe.helpers import response, forms, auth
 from scribe.helpers.auth import configure_auth  # NEW
 
 
-def inject_project_venv(project_path: str, venv_hint: Optional[str] = None):
+def _warn_on_venv_version_mismatch(venv_path: str, project_path: str, venv_version: tuple):
     """
-    Inject a project virtual environment's full Python path into sys.path.
+    Warn when a project venv was made with a different Python than Scribe runs.
 
-    Rather than guessing which stdlib modules to include, we ask the venv's
-    own Python interpreter for its sys.path. This gives us the complete stdlib
-    AND site-packages for that Python version — no hidden imports needed.
+    Pure-Python packages still import across versions, but compiled packages
+    (psycopg2, numpy, orjson, ...) are built for one minor version and fail to
+    load with confusing errors such as "No module named 'orjson.orjson'".
+    """
+    running = tuple(sys.version_info[:2])
+    if venv_version == running:
+        return
+    have = '.'.join(map(str, venv_version))
+    want = '.'.join(map(str, running))
+    rel = os.path.relpath(venv_path, project_path)
+    print(f"  Warning: {rel} uses Python {have}, but Scribe runs Python {want}. Pure-Python packages\n"
+          f"  will work, but compiled ones (psycopg2, numpy, orjson, ...) won't load. Recreate it with\n"
+          f"  Python {want}, e.g. 'uv venv --python {want} {rel}', then reinstall its packages.")
+
+
+def find_venv_python(project_path: str, venv_hint: Optional[str] = None) -> Optional[str]:
+    """
+    Locate a project virtual environment's Python executable.
 
     Resolution order:
-    1. ``venv_hint`` — explicit path from scribe.json "venv" key
+    1. ``venv_hint`` — explicit path from scribe.json "venv" key (absolute,
+       or relative to project_path)
     2. ``VIRTUAL_ENV`` env var — set when user runs ``source .venv/bin/activate``
     3. Scan project directory for ``.venv``, ``venv``, ``env``
-    """
-    import subprocess
-    import json
 
+    Returns the path to the venv's python executable, or None if no venv
+    could be found. Used both by inject_project_venv (dev server) and by
+    the scribe-build tool (which shells out to this interpreter to run
+    PyInstaller and compile route bytecode with the exact Python version
+    that will later load it).
+    """
     candidates = []
 
     if venv_hint:
@@ -59,43 +79,58 @@ def inject_project_venv(project_path: str, venv_hint: Optional[str] = None):
             continue
 
         # Find the venv Python executable (Unix and Windows layouts)
-        python_exe = None
         for candidate in [
             os.path.join(venv_path, 'bin', 'python'),
             os.path.join(venv_path, 'bin', 'python3'),
             os.path.join(venv_path, 'Scripts', 'python.exe'),
         ]:
             if os.path.isfile(candidate):
-                python_exe = candidate
-                break
+                return candidate
 
-        if not python_exe:
-            continue
+    return None
 
-        # Ask the venv Python for its full sys.path — stdlib + site-packages
-        try:
-            result = subprocess.run(
-                [python_exe, '-c', 'import sys, json; print(json.dumps(sys.path))'],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode != 0:
-                continue
 
-            venv_paths = json.loads(result.stdout.strip())
-            added = 0
-            for path in venv_paths:
-                if path and path not in sys.path:
-                    sys.path.append(path)
-                    added += 1
+def inject_project_venv(project_path: str, venv_hint: Optional[str] = None):
+    """
+    Inject a project virtual environment's full Python path into sys.path.
 
-            print(f"  Venv: {venv_path} ({added} paths injected)")
+    Rather than guessing which stdlib modules to include, we ask the venv's
+    own Python interpreter for its sys.path. This gives us the complete stdlib
+    AND site-packages for that Python version — no hidden imports needed.
+    """
+    import subprocess
+    import json
+
+    python_exe = find_venv_python(project_path, venv_hint)
+    if not python_exe:
+        return
+
+    venv_path = os.path.dirname(os.path.dirname(python_exe))
+
+    # Ask the venv Python for its full sys.path — stdlib + site-packages — and its version
+    try:
+        result = subprocess.run(
+            [python_exe, '-c',
+             'import sys, json; print(json.dumps({"path": sys.path, "version": list(sys.version_info[:2])}))'],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
             return
 
-        except Exception as e:
-            print(f"  Warning: could not query venv at {python_exe}: {e}")
-            continue
+        venv_info = json.loads(result.stdout.strip())
+        added = 0
+        for path in venv_info['path']:
+            if path and path not in sys.path:
+                sys.path.append(path)
+                added += 1
+
+        print(f"  Venv: {venv_path} ({added} paths injected)")
+        _warn_on_venv_version_mismatch(venv_path, project_path, tuple(venv_info['version']))
+
+    except Exception as e:
+        print(f"  Warning: could not query venv at {python_exe}: {e}")
 
 
 def should_skip_layout(template: str) -> bool:
@@ -252,13 +287,8 @@ def create_app(
     configure_auth(app, app_config.get('auth', {}))
 
     # Create database manager (supports multiple named connections)
-    # Handle both old 'database' key and new 'databases' key
-    if 'databases' not in app_config and 'database' in app_config:
-        # Old format: convert to new format
-        app_config['databases'] = {'default': app_config['database']}
-    elif 'databases' not in app_config:
-        # No database config at all: use SQLite default
-        app_config['databases'] = {'default': {'type': 'sqlite', 'database': 'app.db'}}
+    # Handles both the old 'database' key and the new 'databases' key
+    app_config['databases'] = get_databases_config(app_config)
 
     db = DatabaseManager(app_config)
 
@@ -277,6 +307,7 @@ def create_app(
     from flask_wtf.csrf import CSRFProtect
     csrf = CSRFProtect(app)
     app.config['CSRF'] = csrf
+    apply_csrf_exemptions(app, csrf, routes)
 
     # Add Jinja2 global functions
     setup_jinja_globals(app)
@@ -285,6 +316,145 @@ def create_app(
     register_db_teardown(app)
 
     print(f"\n✓ ScribeEngine app created with {len(routes)} route(s)")
+
+    return app
+
+
+def load_precompiled_routes(app_data_dir: str) -> List:
+    """
+    Reconstruct Route objects from a scribe-build tool's precompiled
+    artifacts (app_data/routes.json + app_data/code/*.mar).
+
+    Each route's Python block was already parsed and compiled at build
+    time (see scribe.builder.compile_routes), so this only needs to
+    deserialize the code object with marshal — no parsing happens here.
+    """
+    import json
+    import marshal
+    from scribe.parser.ast_nodes import Route
+
+    routes_path = os.path.join(app_data_dir, 'routes.json')
+    with open(routes_path, 'r', encoding='utf-8') as f:
+        entries = json.load(f)
+
+    routes = []
+    for entry in entries:
+        compiled_code = None
+        code_file = entry.get('code_file')
+        if code_file:
+            code_path = os.path.join(app_data_dir, 'code', code_file)
+            with open(code_path, 'rb') as cf:
+                compiled_code = marshal.loads(cf.read())
+
+        routes.append(Route(
+            path=entry['path'],
+            methods=entry.get('methods', ['GET']),
+            decorators=entry.get('decorators', []),
+            python_code=None,
+            compiled_code=compiled_code,
+            template=entry.get('template'),
+            no_layout=entry.get('no_layout', False),
+            is_sse=entry.get('is_sse', False),
+            csrf_exempt=entry.get('csrf_exempt', False),
+        ))
+
+    return routes
+
+
+def create_compiled_app(base_dir: str, config: Optional[Dict[str, Any]] = None) -> Flask:
+    """
+    Build a Flask app from a scribe-build tool's precompiled artifacts.
+
+    This is the runtime entry point used by a frozen, distributable
+    executable: it loads pre-parsed route metadata and precompiled route
+    bytecode from app_data/ instead of parsing .stpl files at startup, and
+    loads lib/ helpers from precompiled .pyc instead of source. Aside from
+    that, it reuses the exact same route registration, decorator, CSRF,
+    auth, and database plumbing as create_app() so request handling behaves
+    identically to the dev server.
+
+    Args:
+        base_dir: Directory containing app_data/ (inside a frozen
+            executable this is the PyInstaller extraction root)
+        config: Optional configuration dict (overrides app_data/scribe.json)
+
+    Returns:
+        Configured Flask application
+    """
+    base_dir = os.path.abspath(base_dir)
+    app_data_dir = os.path.join(base_dir, 'app_data')
+    static_folder = os.path.join(app_data_dir, 'static')
+
+    app = Flask(
+        __name__,
+        instance_relative_config=True,
+        static_folder=static_folder if os.path.exists(static_folder) else None,
+        static_url_path='/static',
+        # base.stpl is copied into app_data/ at build time so {% extends %}
+        # can resolve it the same way create_app() resolves it from the
+        # project root.
+        template_folder=app_data_dir,
+    )
+
+    # No inject_project_venv() here: dependencies were frozen into the
+    # executable at build time, there is no project venv to query at
+    # runtime (and no guarantee Python is even installed on the host).
+    app_config = load_config(app_data_dir, config)
+    app.config.update(app_config)
+    app.config['PROJECT_PATH'] = app_data_dir
+
+    # SECRET_KEY is deliberately stripped from app_data/scribe.json at
+    # build time (see scribe.builder.stage) so a real production secret is
+    # never embedded in the shipped binary. An operator sets it via the
+    # environment at deploy time instead.
+    env_secret_key = os.environ.get('SECRET_KEY')
+    if env_secret_key:
+        app.config['SECRET_KEY'] = env_secret_key
+    if not app.config.get('SECRET_KEY'):
+        import secrets
+        app.config['SECRET_KEY'] = secrets.token_hex(32)
+        print("Warning: No SECRET_KEY set. Set the SECRET_KEY environment variable for production.")
+
+    configure_auth(app, app_config.get('auth', {}))
+
+    if 'databases' not in app_config and 'database' in app_config:
+        app_config['databases'] = {'default': app_config['database']}
+    elif 'databases' not in app_config:
+        app_config['databases'] = {'default': {'type': 'sqlite', 'database': 'app.db'}}
+
+    # Database passwords are stripped at build time the same way
+    # SECRET_KEY is; an operator supplies them via SCRIBE_DB_<NAME>_PASSWORD.
+    for conn_name, conn_config in app_config['databases'].items():
+        if isinstance(conn_config, dict) and not conn_config.get('password'):
+            env_password = os.environ.get(f'SCRIBE_DB_{conn_name.upper()}_PASSWORD')
+            if env_password:
+                conn_config['password'] = env_password
+
+    db = DatabaseManager(app_config)
+    app.config['DB'] = db
+
+    # Run pending migrations automatically: there is no `scribe db migrate`
+    # command available once distributed as a standalone binary.
+    migrations_dir = os.path.join(app_data_dir, 'migrations')
+    if os.path.isdir(migrations_dir):
+        from scribe.migrations import run_migrations
+        run_migrations(db, app_data_dir)
+
+    helpers = load_compiled_helper_modules(os.path.join(app_data_dir, 'lib'))
+    app.config['HELPERS'] = helpers
+
+    routes = load_precompiled_routes(app_data_dir)
+    register_routes(app, routes, db, helpers, app_data_dir)
+
+    from flask_wtf.csrf import CSRFProtect
+    csrf = CSRFProtect(app)
+    app.config['CSRF'] = csrf
+    apply_csrf_exemptions(app, csrf, routes)
+
+    setup_jinja_globals(app)
+    register_db_teardown(app)
+
+    print(f"\n✓ ScribeEngine app loaded from precompiled build ({len(routes)} route(s))")
 
     return app
 
@@ -330,10 +500,7 @@ def create_standalone_gui_app(project_path: str = '.', config: Optional[Dict[str
     configure_auth(app, app_config.get('auth', {}))
 
     # Create database manager (GUI needs this for database browser)
-    if 'databases' not in app_config and 'database' in app_config:
-        app_config['databases'] = {'default': app_config['database']}
-    elif 'databases' not in app_config:
-        app_config['databases'] = {'default': {'type': 'sqlite', 'database': 'app.db'}}
+    app_config['databases'] = get_databases_config(app_config)
 
     db = DatabaseManager(app_config)
     app.config['DB'] = db
@@ -488,6 +655,25 @@ def register_routes(
         print(f"  ✓ {route.path} [{methods_str}]{fragment_note}")
 
 
+def apply_csrf_exemptions(app: Flask, csrf, routes: List):
+    """
+    Exempt routes decorated with @csrf_exempt from Flask-WTF's CSRF checks.
+
+    Must run after CSRFProtect(app) is constructed (csrf.exempt() looks up
+    the view in an internal set that only exists once CSRFProtect has been
+    instantiated) and after register_routes() has already called
+    app.add_url_rule() for every route, so app.view_functions is populated.
+
+    Each handler was given a unique __name__ in create_route_handler(), so
+    this only exempts the one route it's attached to rather than every POST
+    route in the app.
+    """
+    for route in routes:
+        if route.csrf_exempt:
+            endpoint = route.get_function_name()
+            csrf.exempt(app.view_functions[endpoint])
+
+
 def create_route_handler(route, db, helpers: Dict[str, Any], app: Flask, project_path: str):
     """
     Create a Flask view function for a route.
@@ -547,21 +733,27 @@ def create_route_handler(route, db, helpers: Dict[str, Any], app: Flask, project
         context.set_variable('flash', forms.flash)
 
         try:
-            # Execute Python code block if present
-            if route.python_code:
-                # Check if code returns a value (redirect, jsonify, etc.)
+            # Execute Python code block if present. A precompiled code
+            # object (set when routes are reconstructed from a build tool's
+            # precompiled artifacts) takes priority over raw source.
+            if route.compiled_code is not None:
+                exec_result = context.execute_compiled(route.compiled_code)
+            elif route.python_code:
                 exec_result = context.execute(route.python_code)
+            else:
+                exec_result = None
 
+            if route.compiled_code is not None or route.python_code:
                 # If the code set a return value, return it
                 if context.has_return_value():
                     res = context.get_variable('__return__')
-                    
+
                     # Handle SSE generator
                     if is_sse and inspect.isgenerator(res):
                         return Response(stream_with_context(sse_wrapper(res)), mimetype='text/event-stream')
-                    
+
                     return res
-                
+
                 # If the result of execution is a generator, handle it
                 if is_sse and inspect.isgenerator(exec_result):
                     return Response(stream_with_context(sse_wrapper(exec_result)), mimetype='text/event-stream')
@@ -618,6 +810,14 @@ def create_route_handler(route, db, helpers: Dict[str, Any], app: Flask, project
                 print(f"Error in route {route.path}:")
                 traceback.print_exc()
                 return f"Internal Server Error", 500
+
+    # Every generated handler is otherwise the same anonymous closure (name
+    # "handler", same module), which makes Flask-WTF's per-view CSRF
+    # exemption key (f"{__module__}.{__name__}") identical across all
+    # routes. Give each one a real identity so csrf.exempt() can target a
+    # single route instead of silently exempting every POST route in the
+    # app. See register_routes() below, where routes are exempted.
+    handler.__name__ = f"handler__{route.get_function_name()}"
 
     return handler
 

@@ -21,7 +21,7 @@ if os.path.exists("README.md"):
 
 setup(
     name="scribe-engine",
-    version=version.get("__version__", "2.0.0-alpha"),
+    version=version["__version__"],
     author="ScribeEngine Team",
     author_email="",  # TBD
     description="A Python web framework where you write Python directly in templates",
@@ -62,6 +62,7 @@ setup(
     entry_points={
         "console_scripts": [
             "scribe=scribe.cli:cli",
+            "scribe-build=scribe.builder.cli:cli",
         ],
     },
     python_requires=">=3.10",
@@ -73,6 +74,8 @@ setup(
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
         "Framework :: Flask",
         "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
         "Topic :: Software Development :: Libraries :: Application Frameworks",

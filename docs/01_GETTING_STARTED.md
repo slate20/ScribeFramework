@@ -12,16 +12,17 @@ myapp/
 ├── base.stpl             # HTML layout template
 ├── scribe.json           # Configuration (database, secret key)
 ├── lib/                  # Helper functions (auto-loaded)
-│   └── auth_helpers.py   # Password hashing functions
-├── migrations/           # Database schema changes
-│   └── 001_users.sql     # Initial user table
+├── schemas/
+│   └── schema_default.py # The tables your app owns (see Schema Files guide)
+├── migrations/           # .sql files that build the database, run on startup
 ├── static/               # CSS, JavaScript, images
 │   ├── css/
 │   │   └── style.css     # Your styles
 │   └── js/
-├── docs/                 # Documentation (you are here!)
 └── app.db                # SQLite database (created automatically)
 ```
+
+There's no example content to delete: `app.stpl` has a single page and the database starts with no tables. To explore a working app first, run `scribe new myapp --demo`. It adds a tasks list, login and registration pages, `lib/basic_auth.py`, and migrations and schema declarations for the `tasks` and `users` tables.
 
 ## Running Your App
 
@@ -30,7 +31,7 @@ cd myapp
 scribe dev
 ```
 
-Open http://localhost:5000 in your browser. You should see the welcome page!
+Open http://localhost:5000 in your browser. You should see your project's home page.
 
 ## Understanding Routes
 
@@ -113,28 +114,44 @@ $}
 
 ## Using the Database
 
-Your app comes with a SQLite database. Let's query it:
+Your app comes with a SQLite database (`app.db`) that starts with no tables. Describe one in `schemas/schema_default.py`:
 
 ```python
-@route('/users')
+Table("posts",
+    Column("id", "INTEGER", primary_key=True, autoincrement=True),
+    Column("title", "TEXT", nullable=False),
+    Column("created_at", "TIMESTAMP", default=sql("CURRENT_TIMESTAMP")),
+)
+```
+
+Then create it:
+
+```bash
+scribe schema apply     # writes migrations/001_schema_posts.sql and runs it
+```
+
+(See the [Schema Files guide](06_SCHEMA_FILES.md) for more.) Now query it from a route:
+
+```python
+@route('/posts')
 {$
-page_title = "Users"
+page_title = "Posts"
 # Query the database
-users = db['default'].query("SELECT * FROM users")
+posts = db['default'].query("SELECT * FROM posts ORDER BY created_at DESC")
 $}
 
 <div class="container">
-    <h1>Users</h1>
+    <h1>Posts</h1>
 
-    {% if users %}
-        {% for user in users %}
+    {% if posts %}
+        {% for post in posts %}
         <div class="card">
-            <h3>{{ user.username }}</h3>
-            <p>Joined: {{ user.created_at }}</p>
+            <h3>{{ post.title }}</h3>
+            <p>Posted: {{ post.created_at }}</p>
         </div>
         {% endfor %}
     {% else %}
-        <p>No users found.</p>
+        <p>No posts yet.</p>
     {% endif %}
 </div>
 ```

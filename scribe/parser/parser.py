@@ -127,6 +127,10 @@ class TemplateParser:
             route.no_layout = True
             route.decorators.remove('sse')
 
+        if 'csrf_exempt' in route.decorators:
+            route.csrf_exempt = True
+            route.decorators.remove('csrf_exempt')
+
         # Parse Python block (optional)
         if self.current_token and self.current_token.type == TokenType.PYTHON_BLOCK_START:
             self._advance()  # Skip {$

@@ -40,7 +40,7 @@ $}
 * **Auto-Injected Logic:** Any `.py` file in your `lib/` directory is automatically parsed, making its functions immediately accessible in your templates.
 * **Your Workflow, Your Choice:** Scribe is entirely editor-agnostic. Use the optional, browser-based integrated IDE (`scribe ide`) featuring a Monaco-powered editor and database browser, or stick to your preferred local setup (like Neovim or VS Code) and control everything via the CLI.
 * **Modern Interactivity:** Built-in support for **HTMX 2.x** (via `@no_layout` for fragments) and **SSE** (via the `@sse` decorator and `frame()` helper) lets you build reactive, real-time UIs in pure Python.
-* **Database First:** SQLite is configured by default, but Scribe supports PostgreSQL, MySQL, and other major backends via SQLAlchemy. Migrations are managed by simply dropping `.sql` files into a `migrations/` folder.
+* **Database First:** SQLite is configured by default, and Scribe also supports PostgreSQL and Microsoft SQL Server. Migrations are managed by simply dropping `.sql` files into a `migrations/` folder, with `scribe db status` and `scribe db migrate` when you want to apply them deliberately.
 * **Escape Hatches:** Because Scribe is built on Flask, you have full access to the underlying Flask API whenever you need to break out of the standard Scribe workflow.
 
 ---
@@ -50,16 +50,18 @@ $}
 Scribe is distributed as a standalone binary for Linux environments.
 
 1.  **Download and Install:**
-    Extract the release tarball and run the installation script:
+    Download `scribe-vX.Y.Z-alpha.tar.gz` from the [latest release](https://github.com/slate20/ScribeFramework/releases/latest), extract it, and run the installation script:
     ```bash
-    tar -xvf scribe-linux.tar.gz
-    sudo ./install.sh
+    tar -xzf scribe-v2.2.0-alpha.tar.gz
+    ./install.sh
     ```
+    This installs `scribe` and `scribe-build` into `~/.local/bin`. For a system-wide install, run `sudo ./install.sh --install-dir /usr/local/bin` instead.
 2.  **Create a Project:**
     ```bash
     scribe new my-app
     cd my-app
     ```
+    The project is ready to build on, with no example content to remove. Run `scribe new my-app --demo` instead for a starter app to explore (a tasks list, login, and registration).
 3.  **Launch in Development:**
     ```bash
     scribe dev

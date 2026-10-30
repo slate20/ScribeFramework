@@ -612,9 +612,19 @@ body {
     height: 28px;
 }
 
+.status-left {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-right: 1rem;
+}
+
 .status-right {
     display: flex;
     gap: 1rem;
+    white-space: nowrap;
 }
 
 /* Modal */
@@ -767,4 +777,208 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
     background: var(--bg-hover);
+}
+
+/* Schema Panel */
+#schema-content {
+    flex: 1;
+    overflow: auto;
+    padding: 0.8rem;
+    font-size: 0.85rem;
+}
+
+.schema-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.6rem;
+    margin-bottom: 0.6rem;
+}
+
+.schema-file-link {
+    color: var(--success-color);
+    text-decoration: none;
+    font-family: monospace;
+}
+
+.schema-file-link:hover {
+    text-decoration: underline;
+}
+
+.schema-meta {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
+.schema-scope {
+    margin-bottom: 0.6rem;
+    font-family: monospace;
+}
+
+.schema-notice {
+    border-left: 3px solid var(--warning-color);
+    background: var(--bg-tertiary);
+    padding: 0.5rem 0.7rem;
+    margin-bottom: 0.6rem;
+}
+
+.schema-empty p {
+    color: var(--text-secondary);
+    margin-bottom: 0.8rem;
+    line-height: 1.4;
+}
+
+.schema-error pre {
+    color: var(--error-color);
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    padding: 0.7rem;
+    white-space: pre-wrap;
+    margin-bottom: 0.5rem;
+}
+
+.schema-summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.6rem;
+}
+
+.schema-chip {
+    padding: 0.15rem 0.5rem;
+    border-radius: 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    font-size: 0.78rem;
+}
+
+.schema-chip.additive,
+.schema-chip.in-sync { color: var(--success-color); }
+.schema-chip.review { color: var(--warning-color); }
+.schema-chip.destructive { color: var(--error-color); }
+
+.schema-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.8rem;
+}
+
+.schema-table {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--border-color);
+    border-radius: 4px;
+    margin-bottom: 0.5rem;
+}
+
+.schema-table.in_sync { border-left-color: var(--success-color); }
+.schema-table.changed { border-left-color: var(--warning-color); }
+.schema-table.missing { border-left-color: var(--accent-hover); }
+
+.schema-table-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.6rem;
+}
+
+.schema-expand {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    width: 1rem;
+    padding: 0;
+}
+
+.schema-table-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.schema-status {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.schema-status.in_sync { color: var(--success-color); }
+.schema-status.changed { color: var(--warning-color); }
+.schema-status.missing { color: var(--accent-hover); }
+
+.schema-managed {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.schema-changes,
+.schema-table-details {
+    padding: 0 0.6rem 0.5rem 2.1rem;
+}
+
+.schema-change {
+    font-family: monospace;
+    font-size: 0.8rem;
+    padding: 0.1rem 0;
+}
+
+.schema-change.additive { color: var(--success-color); }
+.schema-change.review { color: var(--warning-color); }
+.schema-change.destructive { color: var(--error-color); }
+
+.schema-columns {
+    margin: 0.3rem 0;
+    font-size: 0.8rem;
+}
+
+.schema-columns th,
+.schema-columns td {
+    padding: 0.3rem 0.5rem;
+}
+
+.schema-section {
+    margin-top: 1rem;
+}
+
+.schema-section h4 {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 0.3rem;
+}
+
+.schema-names {
+    font-family: monospace;
+    margin-bottom: 0.2rem;
+    word-break: break-word;
+}
+
+.schema-modal-content {
+    width: min(760px, 90vw);
+}
+
+.schema-modal-summary {
+    color: var(--text-secondary);
+    margin-bottom: 0.8rem;
+    line-height: 1.4;
+}
+
+.schema-sql {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    padding: 0.8rem;
+    max-height: 50vh;
+    overflow: auto;
+    font-size: 0.8rem;
+    margin-bottom: 1rem;
+    white-space: pre;
 }

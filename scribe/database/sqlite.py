@@ -2,9 +2,10 @@
 SQLite database adapter implementation.
 """
 
+import re
 import sqlite3
 from typing import List, Optional, Dict, Any, Union
-from scribe.database.base import DatabaseAdapter, Row
+from scribe.database.base import DatabaseAdapter, Row, ColumnInfo, IndexInfo, ForeignKeyInfo
 
 
 class SQLiteAdapter(DatabaseAdapter):
@@ -244,3 +245,66 @@ class SQLiteAdapter(DatabaseAdapter):
         sql = f"DELETE FROM {table} WHERE {where_clause}"
 
         return self.execute(sql, tuple(params))
+
+    # === Introspection ===
+
+    def get_tables(self, include_views: bool = False) -> List[str]:
+        """List tables (and optionally views) in the database, sorted by name."""
+        types = "('table', 'view')" if include_views else "('table')"
+        rows = self.query(f"SELECT name FROM sqlite_master WHERE type IN {types} ORDER BY name")
+        return [row['name'] for row in rows]
+
+    def get_columns(self, table: str) -> List[ColumnInfo]:
+        """List a table's columns in declaration order."""
+        rows = self.query("SELECT * FROM pragma_table_info(?)", (table,))
+
+        # AUTOINCREMENT only appears in the CREATE TABLE statement
+        table_sql = self.query("SELECT sql FROM sqlite_master WHERE type='table' AND name = ?", (table,))
+        has_autoincrement = bool(table_sql) and bool(
+            re.search(r'\bAUTOINCREMENT\b', table_sql[0]['sql'] or '', re.IGNORECASE)
+        )
+
+        return [
+            ColumnInfo(
+                name=row['name'],
+                type=row['type'],
+                nullable=not row['notnull'],
+                default=row['dflt_value'],
+                primary_key=bool(row['pk']),
+                autoincrement=has_autoincrement and bool(row['pk']),
+            )
+            for row in rows
+        ]
+
+    def has_table(self, table: str) -> bool:
+        """Check whether a table exists."""
+        rows = self.query("SELECT 1 AS found FROM sqlite_master WHERE type='table' AND name = ?", (table,))
+        return bool(rows)
+
+    def get_indexes(self, table: str) -> List[IndexInfo]:
+        """List a table's indexes, including those backing PRIMARY KEY and UNIQUE constraints."""
+        origins = {'c': 'index', 'u': 'unique', 'pk': 'primary_key'}
+        indexes = []
+        for row in self.query("SELECT * FROM pragma_index_list(?) ORDER BY name", (table,)):
+            columns = self.query("SELECT name FROM pragma_index_info(?) ORDER BY seqno", (row['name'],))
+            indexes.append(IndexInfo(
+                name=row['name'],
+                columns=[column['name'] for column in columns],
+                unique=bool(row['unique']),
+                origin=origins.get(row['origin'], 'index'),
+            ))
+        return indexes
+
+    def get_foreign_keys(self, table: str) -> List[ForeignKeyInfo]:
+        """List a table's foreign keys."""
+        foreign_keys = {}
+        for row in self.query("SELECT * FROM pragma_foreign_key_list(?) ORDER BY id, seq", (table,)):
+            fk = foreign_keys.setdefault(row['id'], ForeignKeyInfo(columns=[], ref_table=row['table']))
+            fk.columns.append(row['from'])
+            fk.ref_columns.append(row['to'])
+
+        # "REFERENCES users" without a column list points at the referenced primary key
+        for fk in foreign_keys.values():
+            if any(column is None for column in fk.ref_columns):
+                fk.ref_columns = [c.name for c in self.get_columns(fk.ref_table) if c.primary_key]
+        return list(foreign_keys.values())
