@@ -35,6 +35,7 @@ a = Analysis(
         'scribe.helpers',
         'scribe.loader',
         'scribe.migrations',
+        'scribe.scaffold',
         'scribe.schema',
         'scribe.schema.actions',
         'scribe.gui',

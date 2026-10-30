@@ -4,13 +4,15 @@ Understanding the built-in authentication system.
 
 ## How It Works
 
-Your app includes a complete login system:
+Projects created with `scribe new myapp --demo` include a complete login system you can copy from (a plain `scribe new` project has none, so add only what you need):
 
 1. **Login route** (`/login`) - Validates credentials, creates session
-2. **Dashboard route** (`/dashboard`) - Protected with `@require_auth`
+2. **Register route** (`/register`) - Creates a user with a hashed password
 3. **Logout route** (`/logout`) - Clears session
 4. **Session management** - Flask sessions (server-side)
-5. **Password hashing** - Werkzeug (scrypt algorithm)
+5. **Password hashing** - Werkzeug (scrypt algorithm), via `lib/basic_auth.py`
+
+`@require_auth` protects any route (see below).
 
 ## The Login Flow
 
@@ -117,20 +119,20 @@ $}
 
 ## Removing Authentication
 
-**Don't need auth?** Follow these steps:
+A plain `scribe new` project has no authentication to remove. In a `--demo` project:
 
 1. **Delete auth routes** in `app.stpl`:
    - `/login`
-   - `/dashboard`
+   - `/register`
    - `/logout`
 
-2. **Update `base.stpl` navbar** - replace session check with static links
+2. **Update `base.stpl` navbar** - replace the session check with static links
 
-3. **Delete files:**
-   - `lib/auth_helpers.py`
-   - `migrations/001_users.sql`
+3. **Delete `lib/basic_auth.py`**
 
-4. **Remove decorators:**
+4. **Drop the `users` table** - remove its `Table("users", ...)` from `schemas/schema_default.py`, then run `scribe db new-migration drop_users` and put `DROP TABLE users;` in the new file (keep `migrations/002_users.sql`: migrations that already ran stay in history). Schema files never generate table drops.
+
+5. **Remove decorators:**
    - Delete `@require_auth` from any custom routes
 
 See [Getting Started](01_GETTING_STARTED.md) for more examples.

@@ -60,6 +60,7 @@ Scribe is distributed as a standalone binary for Linux environments.
     scribe new my-app
     cd my-app
     ```
+    The project is ready to build on, with no example content to remove. Run `scribe new my-app --demo` instead for a starter app to explore (a tasks list, login, and registration).
 3.  **Launch in Development:**
     ```bash
     scribe dev

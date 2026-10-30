@@ -1,6 +1,6 @@
 # Proposal: Hybrid Schema System for ScribeFramework
 
-**Status:** Draft (rev 2) — Phases 0–4 implemented (Phase 4: IDE only; scaffolding not revisited)  
+**Status:** Draft (rev 2) — Phases 0–4 implemented  
 **Author:** Matt Venhaus  
 **Date:** 2026-10-27
 
@@ -336,7 +336,7 @@ Hand-written `.sql` files remain fully supported alongside schema files. Because
 
 ### New project
 
-`scribe new` still creates `.sql` migrations (including seed rows), and writes the migration settings explicitly into the scaffolded SQLite connection:
+`scribe new` writes the migration settings explicitly into the scaffolded SQLite connection (and `scribe new --demo` adds starter `.sql` migrations, including seed rows):
 
 ```json
 {
@@ -351,9 +351,9 @@ Hand-written `.sql` files remain fully supported alongside schema files. Because
 }
 ```
 
-The first `scribe dev` creates and seeds `app.db` exactly as today, with no extra steps. Because the settings sit in the `default` block, a user who switches it to PostgreSQL or MSSQL, or copies it to add a second connection, edits them in the same place and can turn auto-run or migrations off.
+The first `scribe dev` creates `app.db` (and for `--demo`, seeds it) with no extra steps. Because the settings sit in the `default` block, a user who switches it to PostgreSQL or MSSQL, or copies it to add a second connection, edits them in the same place and can turn auto-run or migrations off.
 
-A project opts in to schema files later with:
+It also writes `schemas/schema_default.py` (empty, or for `--demo` declaring the starter tables as managed, matching those migrations), so a new project starts schema-first: edit the file, then `scribe schema apply`. Deleting `schemas/` returns the project to migrations-only. Projects created before this opt in with:
 
 ```bash
 scribe schema init
@@ -444,7 +444,7 @@ Default on pull is `managed=False` so that connecting to a production database i
 | **1** | Index and foreign-key introspection (`get_indexes`, `get_foreign_keys`); DSL and registry; `schema init`, `pull`, `diff`, `status` (read-only) |
 | **2** | `schema generate` with the change policy above; `raw_sql` hash tracking; `scribe dev` pending-changes notice. As built: `raw_sql` hashes are recorded as `-- raw_sql: name sha256:…` markers in the generated migrations (no extra table); `generate` refuses while the connection has unapplied migrations, since the diff is against the live database; SQLite review changes are grouped into one commented table-rebuild per table; adding UNIQUE columns or columns with non-constant defaults is review-only on SQLite but additive elsewhere |
 | **3** | Optional `schema apply`: allowed in `dev` only, additive changes only, and records what it ran in `_migrations` so history stays complete. As built: Scribe has no dev/production setting, so "dev only" means connections with `auto_migrate: true` (explicit on non-SQLite connections). `apply` writes a normal migration file and runs it, rather than only recording a `_migrations` row, so every other database (teammates, CI, production, fresh `app.db`) gets the change too. Supporting change: each SQLite migration file now runs in one transaction, with `PRAGMA foreign_keys = OFF` honored before it and a `foreign_key_check` before commit, so a failed `apply` is rolled back and its file removed |
-| **4** | IDE integration (below); revisit scaffolding new projects with schema files. As built: a Schema tab in `scribe ide` with the table browser, drift per table, managed toggle (an `ast`-located edit of the `managed=` keyword that keeps the rest of the file intact, rolled back if the file no longer loads), and Pull / Generate / Apply / Run pending migrations. Generate and Apply always preview the SQL first, and both are disabled while migrations are pending so the preview matches what runs. The steps the CLI and IDE share moved to `scribe/schema/actions.py`. Scaffolding `scribe new` projects with a schema file is not done yet |
+| **4** | IDE integration (below); revisit scaffolding new projects with schema files. As built: a Schema tab in `scribe ide` with the table browser, drift per table, managed toggle (an `ast`-located edit of the `managed=` keyword that keeps the rest of the file intact, rolled back if the file no longer loads), and Pull / Generate / Apply / Run pending migrations. Generate and Apply always preview the SQL first, and both are disabled while migrations are pending so the preview matches what runs. The steps the CLI and IDE share moved to `scribe/schema/actions.py`. `scribe new` now writes `schemas/schema_default.py`, so new projects start schema-first. The scaffold also became minimal by default (no tables, one page); `--demo` keeps the starter app, whose schema file declares the `tasks` and `users` tables as managed (a test checks it matches the starter migrations). Existing workflows are unchanged since the migrations are still the source of truth |
 
 Phases 0–1 are useful on their own: they fix multi-database migrations, make database changes deliberate, and give brown-field projects a readable map of their database with no risk of changing it.
 

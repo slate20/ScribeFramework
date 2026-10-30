@@ -446,6 +446,48 @@ def test_new_project_scaffold_has_explicit_migration_settings(tmp_path):
     assert default['auto_migrate'] is True
 
 
+def test_new_project_is_minimal(tmp_path, monkeypatch):
+    result = CliRunner().invoke(cli, ['new', 'myapp', '--path', str(tmp_path)])
+    assert result.exit_code == 0, result.output
+
+    project = tmp_path / 'myapp'
+    files = sorted(str(p.relative_to(project)).replace(os.sep, '/') for p in project.rglob('*') if p.is_file())
+    assert files == ['.gitignore', 'README.md', 'app.stpl', 'base.stpl', 'schemas/schema_default.py',
+                     'scribe.json', 'static/css/style.css']
+    for folder in ('migrations', 'lib', 'static/js'):
+        assert (project / folder).is_dir()
+    assert 'login' not in (project / 'base.stpl').read_text().lower()
+
+    monkeypatch.chdir(project)  # scribe.json's "app.db" is relative
+    assert CliRunner().invoke(cli, ['db', 'migrate']).exit_code == 0
+    result = CliRunner().invoke(cli, ['schema', 'status'])
+    assert result.exit_code == 0, result.output
+    assert "managed:     0 table(s)" in result.output
+
+
+def test_new_project_minimal_page_renders(tmp_path, monkeypatch):
+    from scribe.app import create_app
+
+    CliRunner().invoke(cli, ['new', 'myapp', '--path', str(tmp_path)])
+    monkeypatch.chdir(tmp_path / 'myapp')
+    app = create_app(str(tmp_path / 'myapp'))
+    response = app.test_client().get('/')
+    assert response.status_code == 200
+    assert b'<h1>myapp</h1>' in response.data
+
+
+def test_new_demo_project_schema_file_matches_its_migrations(tmp_path, monkeypatch):
+    CliRunner().invoke(cli, ['new', 'myapp', '--demo', '--path', str(tmp_path)])
+    assert (tmp_path / 'myapp' / 'lib' / 'basic_auth.py').exists()
+    monkeypatch.chdir(tmp_path / 'myapp')  # scribe.json's "app.db" is relative
+
+    assert CliRunner().invoke(cli, ['db', 'migrate']).exit_code == 0
+    result = CliRunner().invoke(cli, ['schema', 'status'])
+    assert result.exit_code == 0, result.output
+    assert "managed:     2 table(s) — 2 in sync" in result.output
+    assert "untracked" not in result.output
+
+
 def test_unreachable_database_gives_a_one_line_error(tmp_path):
     path = make_project(tmp_path, {'default': {'type': 'sqlite', 'database': str(tmp_path / 'missing' / 'app.db')}})
 

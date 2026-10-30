@@ -8,6 +8,16 @@ Projects without a `schemas/` directory are unaffected.
 
 ## Getting Started
 
+### New projects
+
+`scribe new` creates `schemas/schema_default.py` with no tables yet (`--demo` projects declare the starter `tasks` and `users` tables, matching their migrations). To add a table or column, edit the file and run:
+
+```bash
+scribe schema apply                  # writes the next migrations/NNN_....sql and runs it
+```
+
+Commit the new migration file along with the schema change. The rest of this guide covers the details.
+
 ### Existing database
 
 ```bash
