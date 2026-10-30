@@ -50,11 +50,12 @@ $}
 Scribe is distributed as a standalone binary for Linux environments.
 
 1.  **Download and Install:**
-    Extract the release tarball and run the installation script:
+    Download `scribe-vX.Y.Z-alpha.tar.gz` from the [latest release](https://github.com/slate20/ScribeFramework/releases/latest), extract it, and run the installation script:
     ```bash
-    tar -xvf scribe-linux.tar.gz
-    sudo ./install.sh
+    tar -xzf scribe-v2.2.0-alpha.tar.gz
+    ./install.sh
     ```
+    This installs `scribe` and `scribe-build` into `~/.local/bin`. For a system-wide install, run `sudo ./install.sh --install-dir /usr/local/bin` instead.
 2.  **Create a Project:**
     ```bash
     scribe new my-app
