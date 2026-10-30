@@ -1,16 +1,19 @@
 """
-Writing schema files for `scribe schema init` and `scribe schema pull`.
+Writing schema files for `scribe schema init` and `scribe schema pull`, and
+the IDE's managed toggle.
 
 Pull only ever appends: tables already declared in the file (managed or
 not, including unmanaged()) are left exactly as the user wrote them.
 """
 
+import ast
 import datetime
 import json
 import os
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 from scribe.schema.introspect import LiveTable
+from scribe.schema.dsl import SchemaError
 from scribe.schema.loader import load_schema
 from scribe.schema.normalize import default_to_python, python_literal
 
@@ -172,3 +175,96 @@ def pull_into_file(path: str, connection_name: str, dialect: str,
         raise
 
     return [t.name for t in added], skipped
+
+
+# === Editing declarations in place (IDE) ===
+
+def _table_calls(source: str):
+    """(table name, ast.Call) for each Table("name", ...) call in a schema file's source."""
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        func = node.func
+        called = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
+        first = node.args[0]
+        if called == 'Table' and isinstance(first, ast.Constant) and isinstance(first.value, str):
+            yield first.value, node
+
+
+def table_lines(path: str) -> Dict[str, int]:
+    """Lowercased table name -> line of its Table(...) call, for jumping to a declaration."""
+    with open(path, 'r', encoding='utf-8') as f:
+        source = f.read()
+    try:
+        return {name.lower(): call.lineno for name, call in _table_calls(source)}
+    except SyntaxError:
+        return {}
+
+
+def set_table_managed(path: str, table_name: str, managed: bool) -> bool:
+    """
+    Set managed=True/False on a Table(...) call, keeping the rest of the file as written.
+
+    Returns:
+        False if the table already had that setting (the file is unchanged)
+
+    Raises:
+        SchemaError: If the table isn't declared with a literal Table("name", ...)
+                     call, or the edited file doesn't load (it is left unchanged)
+    """
+    with open(path, 'r', encoding='utf-8') as f:
+        original = f.read()
+
+    definition = load_schema(path)
+    table = definition.tables.get(table_name.lower())
+    if table is None:
+        where = "with unmanaged()" if table_name.lower() in definition.unmanaged else "in this file"
+        raise SchemaError(f"Table {table_name!r} isn't declared {where}; only Table(...) declarations can be managed")
+    if table.managed == managed:
+        return False
+
+    calls = [call for name, call in _table_calls(original) if name.lower() == table_name.lower()]
+    if len(calls) != 1:
+        raise SchemaError(f"Couldn't find the Table({table_name!r}, ...) call to edit; change managed= by hand")
+    call = calls[0]
+
+    # ast offsets are UTF-8 byte columns, so edit the encoded source
+    data = original.encode('utf-8')
+    line_starts = [0]
+    for line in data.splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(line))
+
+    def offset(lineno, col):
+        return line_starts[lineno - 1] + col
+
+    value = 'True' if managed else 'False'
+    keyword = next((k for k in call.keywords if k.arg == 'managed'), None)
+    if keyword is not None:
+        start = offset(keyword.value.lineno, keyword.value.col_offset)
+        end = offset(keyword.value.end_lineno, keyword.value.end_col_offset)
+        data = data[:start] + value.encode() + data[end:]
+    else:
+        # Add managed=... after the last argument, matching the call's layout
+        last = max(call.args + call.keywords, key=lambda n: (n.end_lineno, n.end_col_offset))
+        last_end = offset(last.end_lineno, last.end_col_offset)
+        between = data[last_end:offset(call.end_lineno, call.end_col_offset) - 1]
+        if call.lineno == call.end_lineno:
+            insert_at, text = last_end, f", managed={value}"
+        else:
+            line = data[line_starts[last.lineno - 1]:line_starts[last.lineno]].decode('utf-8')
+            indent = line[:len(line) - len(line.lstrip())]
+            if b',' in between:
+                insert_at, text = last_end + between.index(b',') + 1, f"\n{indent}managed={value},"
+            else:
+                insert_at, text = last_end, f",\n{indent}managed={value}"
+        data = data[:insert_at] + text.encode() + data[insert_at:]
+
+    with open(path, 'wb') as f:
+        f.write(data)
+    try:
+        load_schema(path)
+    except SchemaError:
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(original)
+        raise
+    return True

@@ -195,6 +195,18 @@ scribe schema apply --dry-run       # print it instead
 - It writes a normal numbered migration file. **Commit that file with your schema change.** Every other database (a teammate's, CI, production, or a fresh `app.db`) is built from migration files, so a change made without one would exist only in your database.
 - If the migration fails, it is rolled back and the file is removed, so nothing is left half-applied.
 
+## In the IDE
+
+`scribe ide` has a **Schema** tab next to Database and Routes. Pick a connection to see its schema file compared with the live database:
+
+- Each declared table, colored by status: in sync, changed, not in the database yet, or unmanaged. Changes are listed under the table with the same `+` / `!` / `-` marks as `scribe schema diff`. Expand a table to see its declared columns and indexes; click its name to jump to the declaration in the editor.
+- The **managed** checkbox sets `managed=True` or `managed=False` on that table's `Table(...)` call in the file, leaving the rest of the file as you wrote it.
+- **Pull**, **Generate migration**, and **Apply** do what the commands do. Generate and Apply show the SQL first and only write anything when you confirm; a generated migration opens in the editor for review. They follow the same rules as the CLI: Apply is only offered on connections with `"auto_migrate": true`, and both are disabled while the connection has pending migrations (**Run pending migrations** applies them), because the comparison is against the live database.
+- Saving the schema file in the editor compares it again. If the file doesn't load, the panel shows the error and links to the line.
+- With no schema file yet, the tab offers to pull one from the database or create an empty one.
+
+The panel reads the saved file, and re-reads `scribe.json` each time, so you don't need to restart the IDE after editing either.
+
 ## Commands
 
 ```bash

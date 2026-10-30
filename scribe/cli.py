@@ -17,6 +17,10 @@ import sys
 from pathlib import Path
 
 from scribe import __version__
+from scribe.schema.actions import (
+    apply_refusal as _apply_refusal,
+    implicit_migrations_refusal as _implicit_migrations_refusal,
+)
 
 
 def _implicit_migrations_warning(target, path, pending=None, will_run=False):
@@ -41,16 +45,6 @@ def _implicit_migrations_warning(target, path, pending=None, will_run=False):
         f"  If Scribe should manage it, add \"migrations\": \"{folder}\" and \"auto_migrate\" (true or false).",
     ]
     return '\n'.join(lines)
-
-
-def _implicit_migrations_refusal(target):
-    """Why a command won't create migration files for a connection, or None if it may."""
-    if not target.needs_explicit_migrations:
-        return None
-    # Only 'default' has migrations on without the key, and then the folder is always migrations/
-    return (f"'{target.name}' ({target.dialect}) doesn't set \"migrations\" in scribe.json, so Scribe won't "
-            f"create migrations for it. If Scribe should manage its schema, add \"migrations\": \"migrations\" "
-            f"to its block (or \"migrations\": false if the schema is managed elsewhere).")
 
 
 def _run_startup_migrations(db, path, migrate):
@@ -1370,6 +1364,8 @@ def ide(host, port, app_port, debug, no_reload, migrate, path):
     - Code editor with .stpl syntax highlighting
     - Live preview of your app
     - Database browser
+    - Schema panel: schemas/*.py compared with the database, with pull,
+      generate, and apply
     - File management
     - Route explorer
 
@@ -1626,15 +1622,12 @@ def _read_live_schema(name, block, table_filter=None):
     Returns:
         (live tables accepted by table_filter, total number of tables in the database)
     """
-    from scribe.schema.introspect import read_live_schema_counted
+    from scribe.schema.actions import read_live
 
-    db = _connect(name, block)
     try:
-        return read_live_schema_counted(db, table_filter)
+        return read_live(_connect, name, block, table_filter)
     except NotImplementedError as e:
         raise click.ClickException(f"'{name}': {e}")
-    finally:
-        db.close()
 
 
 def _load_schema_file(file):
@@ -1756,42 +1749,19 @@ def _change_symbol(change):
     return _CHANGE_SYMBOLS['destructive'] if change.destructive else _CHANGE_SYMBOLS['review']
 
 
-class _SchemaCheck:
-    """A connection's schema file compared with its database, for the schema commands."""
-
-    def __init__(self, name, block, file, definition=None, live=None, diff=None, target=None, raw=(),
-                 total_tables=0):
-        self.name = name
-        self.block = block
-        self.dialect = block.get('type', 'sqlite').lower()
-        self.file = file
-        self.definition = definition    # None when the connection has no schema file
-        self.live = live
-        self.diff = diff
-        self.target = target            # MigrationTarget, or None when migrations are disabled
-        self.raw = list(raw)            # raw_sql blocks not yet in a generated migration
-        self.total_tables = total_tables  # tables in the database, in scope or not
-
-    @property
-    def change_count(self):
-        return len(self.diff.changes) + len(self.raw) if self.diff else 0
-
-
 def _check_schemas(path, database, untracked=False):
     """
     Load and diff each connection's schema file.
 
     Args:
-        untracked: Also read in-scope tables the file doesn't declare, so the diff
-                   can list them as untracked (for status). Otherwise only declared
-                   tables are read, which is all diff/generate/apply compare.
+        untracked: Also read in-scope tables the file doesn't declare (for status)
 
     Yields:
-        _SchemaCheck per connection (with definition=None when it has no schema file)
+        SchemaCheck per connection (with definition=None when it has no schema file)
     """
     from scribe.migrations import get_migration_targets, MigrationConfigError
-    from scribe.schema.diff import diff_schema
-    from scribe.schema.generate import raw_sql_changes
+    from scribe.schema import SchemaError
+    from scribe.schema.actions import check_connection
     from scribe.schema.loader import schema_file_path
 
     try:
@@ -1801,22 +1771,16 @@ def _check_schemas(path, database, untracked=False):
 
     for name, block in _schema_connections(path, database).items():
         file = schema_file_path(path, name)
-        target = targets.get(name)
-        if not os.path.exists(file):
-            if database is not None:
-                raise click.ClickException(
-                    f"No schema file for '{name}'. Run 'scribe schema pull --database {name}' to create one."
-                )
-            yield _SchemaCheck(name, block, file, target=target)
-            continue
-
-        definition = _load_schema_file(file)
-        live, total = _read_live_schema(name, block, definition.in_scope if untracked else definition.declares)
-        dialect = block.get('type', 'sqlite').lower()
-        # raw_sql blocks are tracked through generated migrations, so only connections with migrations have them
-        raw = raw_sql_changes(definition, target.path) if target else []
-        yield _SchemaCheck(name, block, file, definition, live, diff_schema(definition, live, dialect), target, raw,
-                           total_tables=total)
+        if not os.path.exists(file) and database is not None:
+            raise click.ClickException(
+                f"No schema file for '{name}'. Run 'scribe schema pull --database {name}' to create one."
+            )
+        try:
+            yield check_connection(_connect, name, block, file, targets.get(name), untracked)
+        except SchemaError as e:
+            raise click.ClickException(str(e))
+        except NotImplementedError as e:
+            raise click.ClickException(f"'{name}': {e}")
 
 
 @schema_commands.command()
@@ -1936,19 +1900,6 @@ def schema_status(database, path):
         click.echo()
 
 
-def _migration_slug(name, tables):
-    """File name part for a generated migration: --name, or derived from the tables it touches."""
-    if name:
-        slug = name
-    elif tables:
-        slug = 'schema_' + '_'.join(t.rpartition('.')[2] for t in tables[:3])
-        if len(tables) > 3:
-            slug += '_etc'
-    else:
-        slug = 'schema_raw_sql'
-    return re.sub(r'[^A-Za-z0-9_]+', '_', slug).strip('_').lower() or 'schema'
-
-
 @schema_commands.command()
 @click.option('--database', default=None,
               help='Connection name (default: every connection with a schema file and migrations enabled)')
@@ -1969,8 +1920,7 @@ def generate(database, migration_name, dry_run, force, path):
         scribe schema generate --database analytics --name add_page_views
         scribe schema generate --dry-run
     """
-    from scribe.migrations import get_pending_migrations, next_migration_filename
-    from scribe.schema.generate import generate_migration
+    from scribe.schema.actions import generate_refusal, pending_migrations, render_migration, write_migration
 
     if _no_schemas_dir(path):
         return
@@ -1979,14 +1929,11 @@ def generate(database, migration_name, dry_run, force, path):
         name = check.name
         if check.definition is None:
             continue
-        if check.target is None or check.target.needs_explicit_migrations:
-            folder = 'migrations' if name == 'default' else f'migrations/{name}'
-            message = (_implicit_migrations_refusal(check.target) if check.target else
-                       f"Migrations are not enabled for '{name}', so there's nowhere to write the migration. "
-                       f"To enable them, add\n  \"migrations\": \"{folder}\"\nto its block in scribe.json.")
+        refusal = generate_refusal(check.target, name)
+        if refusal:
             if database is not None:
-                raise click.ClickException(message)
-            click.echo(f"{name}: skipped. {message}\n")
+                raise click.ClickException(refusal)
+            click.echo(f"{name}: skipped. {refusal}\n")
             continue
 
         if not check.change_count:
@@ -1994,21 +1941,14 @@ def generate(database, migration_name, dry_run, force, path):
             continue
 
         # The diff is against the live database, so unapplied migrations would be generated again
-        db = _connect(check.name, check.block)
-        try:
-            pending = get_pending_migrations(db, check.target.path)
-        finally:
-            db.close()
+        pending = pending_migrations(_connect, name, check.block, check.target)
         if pending:
             raise click.ClickException(
                 f"'{name}' has {len(pending)} pending migration(s) ({', '.join(pending)}). "
                 f"Run 'scribe db migrate --database {name}' first so the diff includes them."
             )
 
-        migration = generate_migration(
-            check.definition, check.diff, check.live, check.dialect, name,
-            os.path.relpath(check.file, path), check.raw,
-        )
+        migration = render_migration(check, path)
 
         if dry_run:
             click.echo(migration.sql)
@@ -2022,13 +1962,7 @@ def generate(database, migration_name, dry_run, force, path):
             )
             continue
 
-        os.makedirs(check.target.path, exist_ok=True)
-        filename = next_migration_filename(check.target.path, _migration_slug(migration_name, migration.tables))
-        file = os.path.join(check.target.path, filename)
-        with open(file, 'w', encoding='utf-8') as f:
-            f.write(migration.sql)
-
-        rel = os.path.relpath(file, path)
+        rel = os.path.relpath(write_migration(check.target, migration, migration_name), path)
         click.echo(f"✓ {name}: wrote {rel}")
         click.echo(f"  {migration.live} statement(s) will run, {migration.review} commented out for review")
         if check.target.auto_migrate:
@@ -2038,23 +1972,6 @@ def generate(database, migration_name, dry_run, force, path):
             click.echo(f"  Review it, then run 'scribe db migrate"
                        f"{'' if name == 'default' else ' --database ' + name}'.")
         click.echo()
-
-
-def _apply_refusal(target, name):
-    """Why `scribe schema apply` won't run on a connection, or None if it may."""
-    if target is None:
-        folder = 'migrations' if name == 'default' else f'migrations/{name}'
-        return (f"Migrations are not enabled for '{name}'. To enable them, add\n"
-                f"  \"migrations\": \"{folder}\"\nto its block in scribe.json.")
-    if target.needs_explicit_migrations:
-        return _implicit_migrations_refusal(target)
-    if not target.auto_migrate:
-        return (f"'{name}' has auto_migrate off, so its migrations are applied deliberately. "
-                f"Use 'scribe schema generate', review the file, then 'scribe db migrate'.")
-    if target.auto_migrate_implicit and target.dialect != 'sqlite':
-        return (f"'{name}' ({target.dialect}) has no explicit \"auto_migrate\" setting. "
-                f"Set \"auto_migrate\": true in its scribe.json block to allow 'scribe schema apply' on it.")
-    return None
 
 
 @schema_commands.command()
@@ -2076,12 +1993,10 @@ def apply(database, migration_name, dry_run, path):
         scribe schema apply
         scribe schema apply --database default --name add_due_date
     """
-    from scribe.migrations import (
-        get_migration_targets, get_pending_migrations, next_migration_filename, run_migrations,
-        MigrationConfigError,
+    from scribe.migrations import get_migration_targets, MigrationConfigError
+    from scribe.schema.actions import (
+        additive_part, pending_migrations, render_migration, run_pending, run_written_migration, write_migration,
     )
-    from scribe.schema.diff import SchemaDiff
-    from scribe.schema.generate import generate_migration
     from scribe.schema.loader import schema_file_path
 
     if _no_schemas_dir(path):
@@ -2109,27 +2024,21 @@ def apply(database, migration_name, dry_run, path):
 
         # This connection would run pending migrations on its next start anyway; do it now
         # so the diff reflects them.
-        db = _connect(name, block)
-        try:
-            pending = get_pending_migrations(db, target.path)
-            if pending and not dry_run:
-                click.echo(f"{name}: running {len(pending)} pending migration(s) first")
-                try:
-                    run_migrations(db, path, target.path)
-                except Exception:
-                    raise click.ClickException(f"A pending migration for '{name}' failed; fix it and try again.")
-        finally:
-            db.close()
+        pending = pending_migrations(_connect, name, block, target)
         if pending and dry_run:
             raise click.ClickException(
                 f"'{name}' has {len(pending)} pending migration(s); without --dry-run they'd run first. "
                 f"Run 'scribe db migrate --database {name}' to apply them, then try again."
             )
+        if pending:
+            click.echo(f"{name}: running {len(pending)} pending migration(s) first")
+            try:
+                run_pending(_connect, name, block, path, target)
+            except Exception:
+                raise click.ClickException(f"A pending migration for '{name}' failed; fix it and try again.")
 
         check = next(_check_schemas(path, name))
-        additive = SchemaDiff(changes=[c for c in check.diff.changes if c.additive])
-        raw = [r for r in check.raw if r.status == 'new']
-        left_out = len(check.diff.changes) - len(additive.changes) + len(check.raw) - len(raw)
+        additive, raw, left_out = additive_part(check)
 
         if not additive.changes and not raw:
             message = f"{name}: nothing to apply"
@@ -2139,31 +2048,17 @@ def apply(database, migration_name, dry_run, path):
             click.echo(message)
             continue
 
-        migration = generate_migration(
-            check.definition, additive, check.live, check.dialect, name,
-            os.path.relpath(check.file, path), raw,
-        )
+        migration = render_migration(check, path, additive, raw)
         if dry_run:
             click.echo(migration.sql)
             continue
 
-        os.makedirs(target.path, exist_ok=True)
-        filename = next_migration_filename(target.path, _migration_slug(migration_name, migration.tables))
-        file = os.path.join(target.path, filename)
+        file = write_migration(target, migration, migration_name)
         rel = os.path.relpath(file, path)
-        with open(file, 'w', encoding='utf-8') as f:
-            f.write(migration.sql)
         click.echo(f"✓ {name}: wrote {rel} ({migration.live} statement(s))")
 
-        db = _connect(name, block)
-        try:
-            run_migrations(db, path, target.path)
-        except Exception:
-            # Nothing was applied (the migration ran in one transaction), so don't leave the file pending
-            os.remove(file)
+        if run_written_migration(_connect, name, block, path, target, file):
             raise click.ClickException(f"Applying {rel} failed and was rolled back; the file was removed.")
-        finally:
-            db.close()
 
         click.echo(f"  Commit {rel} along with your schema change so other databases get it.")
         if left_out:

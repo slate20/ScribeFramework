@@ -81,6 +81,7 @@
                                     <li><strong>.stpl files</strong> - ScribeEngine templates with syntax highlighting</li>
                                     <li><strong>Live Preview</strong> - See your changes in real-time</li>
                                     <li><strong>Database Browser</strong> - Explore your app database</li>
+                                    <li><strong>Schema</strong> - Compare schemas/*.py with the database and generate migrations</li>
                                 </ul>
                             </div>
                         </div>
@@ -108,6 +109,7 @@
                 <div class="panel-tabs">
                     <button class="panel-tab active" data-panel="preview">Preview</button>
                     <button class="panel-tab" data-panel="database">Database</button>
+                    <button class="panel-tab" data-panel="schema">Schema</button>
                     <button class="panel-tab" data-panel="routes">Routes</button>
                 </div>
 
@@ -136,6 +138,19 @@
                     </div>
                     <div id="database-content">
                         <p class="placeholder-text">Select a table to view its data</p>
+                    </div>
+                </div>
+
+                <!-- Schema Panel -->
+                <div id="schema-panel" class="panel-content">
+                    <div class="database-controls">
+                        <select id="schema-connection-select" class="connection-select">
+                            <option value="">Loading connections...</option>
+                        </select>
+                        <button id="schema-refresh-btn" class="btn btn-sm" title="Compare the saved schema file with the database again">Refresh</button>
+                    </div>
+                    <div id="schema-content">
+                        <p class="placeholder-text">Loading schema...</p>
                     </div>
                 </div>
 
@@ -169,6 +184,20 @@
             <div class="modal-actions">
                 <button id="new-folder-create-btn" class="btn btn-primary">Create</button>
                 <button id="new-folder-cancel-btn" class="btn">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Schema Migration Modal (generate / apply preview) -->
+    <div id="schema-migration-modal" class="modal" style="display: none;">
+        <div class="modal-content schema-modal-content">
+            <h2 id="schema-migration-title">Migration</h2>
+            <p id="schema-migration-summary" class="schema-modal-summary"></p>
+            <pre id="schema-migration-sql" class="schema-sql"></pre>
+            <input type="text" id="schema-migration-name" placeholder="Migration name (optional, default: from the tables changed)">
+            <div class="modal-actions">
+                <button id="schema-migration-confirm-btn" class="btn btn-primary">Write</button>
+                <button id="schema-migration-cancel-btn" class="btn">Cancel</button>
             </div>
         </div>
     </div>
