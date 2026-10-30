@@ -62,6 +62,7 @@ setup(
     entry_points={
         "console_scripts": [
             "scribe=scribe.cli:cli",
+            "scribe-build=scribe.builder.cli:cli",
         ],
     },
     python_requires=">=3.10",

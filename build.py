@@ -2,9 +2,9 @@
 """
 Build script for creating standalone ScribeEngine executables.
 
-This script uses PyInstaller to create platform-specific binaries. The
-binary bundles the Python that runs this script, so build releases with a
-standalone Python 3.14:
+This script uses PyInstaller to create platform-specific binaries of
+scribe and scribe-build. They bundle the Python that runs this script, so
+build releases with a standalone Python 3.14:
 
     uv venv --python 3.14 --managed-python buildvenv
     uv pip install --python buildvenv/bin/python -r requirements.txt
@@ -53,10 +53,59 @@ def clean_build_dirs():
             shutil.rmtree(dir_name)
 
 
+def prepare_runtime_bundle():
+    """
+    Copy the scribe runtime package (minus gui/cli.py/builder) into
+    scribe_runtime_src/ at the repo root, so scribe_build_tool.spec can
+    bundle it as plain data. scribe-build (frozen) copies this into a
+    project's _scribe_build/ during staging — it can't introspect its own
+    frozen modules for that, since they live inside a PYZ archive rather
+    than as files on disk.
+    """
+    from scribe.builder.runtime_source import copy_runtime_package
+
+    print("\nPreparing scribe_runtime_src/ ...")
+    copy_runtime_package('scribe_runtime_src')
+
+
+def _build_one(spec_file, exe_base_name, platform_name):
+    """Run PyInstaller for one spec file and copy the result into release/."""
+    # Run PyInstaller with this Python, so the binary bundles the Python build_executable() checked
+    print(f"\nRunning PyInstaller ({spec_file}, Python {platform.python_version()}, {sys.executable})...")
+    result = subprocess.run(
+        [sys.executable, '-m', 'PyInstaller', spec_file, '--clean'],
+        check=True
+    )
+
+    if result.returncode != 0:
+        print(f"ERROR: Build failed for {spec_file}")
+        sys.exit(1)
+
+    exe_name = f'{exe_base_name}.exe' if platform_name == 'windows' else exe_base_name
+    exe_path = Path('dist') / exe_name
+    if not exe_path.exists():
+        print(f"ERROR: Executable not found at {exe_path}")
+        sys.exit(1)
+
+    release_dir = Path('release')
+    release_dir.mkdir(exist_ok=True)
+
+    release_name = f'{exe_base_name}-{platform_name}'
+    if platform_name == 'windows':
+        release_name += '.exe'
+
+    release_path = release_dir / release_name
+    shutil.copy2(exe_path, release_path)
+
+    size_mb = os.path.getsize(release_path) / (1024 * 1024)
+    print(f"  {release_path} ({size_mb:.1f} MB)")
+    return release_path
+
+
 def build_executable():
-    """Build the standalone executable using PyInstaller."""
+    """Build the standalone scribe and scribe-build executables using PyInstaller."""
     print("=" * 60)
-    print("Building ScribeEngine Standalone Executable")
+    print("Building ScribeEngine Standalone Executables")
     print("=" * 60)
 
     if sys.version_info[:2] != RELEASE_PYTHON:
@@ -75,59 +124,34 @@ def build_executable():
 
     # Clean old builds
     clean_build_dirs()
+    if os.path.exists('scribe_runtime_src'):
+        shutil.rmtree('scribe_runtime_src')
 
-    # Run PyInstaller with this Python, so the binary bundles the Python checked above
-    print(f"\nRunning PyInstaller (Python {platform.python_version()}, {sys.executable})...")
-    result = subprocess.run(
-        [sys.executable, '-m', 'PyInstaller', 'scribe.spec', '--clean'],
-        check=True
-    )
+    prepare_runtime_bundle()
 
-    if result.returncode != 0:
-        print("ERROR: Build failed")
-        sys.exit(1)
-
-    # Get platform info
     platform_name = get_platform_name()
-    exe_name = 'scribe.exe' if platform_name == 'windows' else 'scribe'
+    results = [
+        _build_one('scribe.spec', 'scribe', platform_name),
+        _build_one('scribe_build_tool.spec', 'scribe-build', platform_name),
+    ]
 
-    # Check if build succeeded
-    exe_path = Path('dist') / exe_name
-    if not exe_path.exists():
-        print(f"ERROR: Executable not found at {exe_path}")
-        sys.exit(1)
-
-    # Create release directory
-    release_dir = Path('release')
-    release_dir.mkdir(exist_ok=True)
-
-    # Copy executable to release with platform name
-    release_name = f'scribe-{platform_name}'
-    if platform_name == 'windows':
-        release_name += '.exe'
-
-    release_path = release_dir / release_name
-    shutil.copy2(exe_path, release_path)
-
-    # Get file size
-    size_mb = os.path.getsize(release_path) / (1024 * 1024)
-
-    glibc = None
+    glibc = {}
     if platform_name == 'linux':
-        glibc, library = required_glibc(release_path)
+        glibc = {path: required_glibc(path)[0] for path in results}
 
     print("\n" + "=" * 60)
     print("✓ Build Successful!")
     print("=" * 60)
     print(f"Platform: {platform_name}")
     print(f"Python: {platform.python_version()}")
-    print(f"Executable: {release_path}")
-    print(f"Size: {size_mb:.1f} MB")
-    if glibc:
-        print(f"Requires glibc: {glibc[0]}.{glibc[1]} or newer")
-    print("\nTest it with:")
-    print(f"  {release_path} --version")
-    print(f"  {release_path} --help")
+    for path in results:
+        line = f"Executable: {path}"
+        if glibc.get(path):
+            line += f" (requires glibc {glibc[path][0]}.{glibc[path][1]} or newer)"
+        print(line)
+    print("\nTest with:")
+    print(f"  {results[0]} --version")
+    print(f"  {results[1]} build --path <project>")
     print("=" * 60)
 
 
@@ -205,7 +229,8 @@ if __name__ == '__main__':
         build_executable()
 
         if get_platform_name() == 'linux' and not args.skip_glibc_check:
-            check_glibc(Path('release') / 'scribe-linux')
+            for name in ('scribe-linux', 'scribe-build-linux'):
+                check_glibc(Path('release') / name)
 
         if args.test:
             test_executable()

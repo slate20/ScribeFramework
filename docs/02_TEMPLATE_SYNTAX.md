@@ -147,6 +147,23 @@ $}
 <div class="update">Current count: {{ count }}</div>
 ```
 
+### @csrf_exempt
+
+Exempt this route from Flask-WTF's CSRF protection, which is otherwise applied to every
+`POST`/`PUT`/`PATCH`/`DELETE` route and requires a token bound to the browser session
+cookie. Use this on API endpoints meant to be called with a bearer token or from another
+service, since those clients never carry that cookie and would otherwise always get a 400.
+
+```python
+@route('/api/webhook', methods=['POST'])
+@csrf_exempt
+{$ ... $}
+```
+
+Do **not** add this to routes rendered by, or submitted from, an HTML form in your app —
+those still need CSRF protection. Prefer scoping it to a dedicated API path (e.g. under
+`/api/`) rather than reusing a route that's also form-facing.
+
 ## Built-in Helpers
 
 ### frame(template=None, event=None, **kwargs)
