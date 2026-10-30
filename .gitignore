@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# build.py output
+build/
+dist/
+release/
+scribe_runtime_src/
+
+# Test and editor leftovers
+.pytest_cache/
+.vscode/
+.idea/
+*.swp
+.DS_Store
