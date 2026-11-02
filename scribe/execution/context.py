@@ -10,6 +10,7 @@ import textwrap
 import types
 import inspect
 from typing import Dict, Any, Optional
+from werkzeug.exceptions import HTTPException
 from scribe.execution.builtins import get_safe_builtins
 
 
@@ -143,7 +144,8 @@ class ExecutionContext:
         request=None,
         g=None,
         helpers: Optional[Dict[str, Any]] = None,
-        route_params: Optional[Dict[str, Any]] = None
+        route_params: Optional[Dict[str, Any]] = None,
+        data_dir: Optional[str] = None,
     ):
         """
         Initialize execution context.
@@ -155,6 +157,8 @@ class ExecutionContext:
             g: Flask g object
             helpers: Dict of helper functions/objects loaded from lib/
             route_params: Dict of route parameters (e.g., {'post_id': 123})
+            data_dir: Persistent data directory for this app (DATA_DIR);
+                exposed to Python blocks as `data_dir`
         """
         self.db = db
         self.session = session
@@ -162,6 +166,7 @@ class ExecutionContext:
         self.g = g
         self.helpers = helpers or {}
         self.route_params = route_params or {}
+        self.data_dir = data_dir
 
         # Namespace for code execution (variables set in Python blocks)
         self.namespace: Dict[str, Any] = {}
@@ -179,6 +184,7 @@ class ExecutionContext:
             - Session (session)
             - Request (request)
             - Flask g (g)
+            - Persistent data directory (data_dir)
             - Helper functions
             - Route parameters
         """
@@ -190,6 +196,8 @@ class ExecutionContext:
         self.namespace['session'] = self.session
         self.namespace['request'] = self.request
         self.namespace['g'] = self.g
+        # Set before helpers/route params so either can still override it.
+        self.namespace['data_dir'] = self.data_dir
 
         # Add helpers from lib/ directory
         self.namespace.update(self.helpers)
@@ -336,6 +344,10 @@ class ExecutionContext:
 
             return result
 
+        except HTTPException:
+            # abort() and friends must reach Flask unchanged so the intended
+            # status code is returned instead of a 500.
+            raise
         except Exception as e:
             raise ExecutionError(f"Error executing template code: {e}") from e
 
@@ -363,7 +375,7 @@ class ExecutionContext:
         """
         # Names injected by the framework that should never appear in templates
         framework_names = {
-            'db', 'session', 'request', 'g',
+            'db', 'session', 'request', 'g', 'data_dir',
             '__scribe_route_handler__',
             '__locals__',
         }

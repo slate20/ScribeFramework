@@ -277,7 +277,7 @@ function registerScribeLanguage() {
                     [/\b(print|len|range|enumerate|zip|map|filter|str|int|float|bool|list|dict|set|tuple|type|isinstance|hasattr|getattr|setattr)\b/, 'support.function'],
 
                     // Special objects available in ScribeEngine
-                    [/\b(db|session|request|g|redirect|abort|jsonify|url_for|csrf|flash)\b/, 'variable.language'],
+                    [/\b(db|session|request|g|data_dir|redirect|abort|jsonify|url_for|csrf|flash)\b/, 'variable.language'],
 
                     // Decorators
                     [/@\w+/, 'annotation'],
@@ -465,6 +465,13 @@ function registerScribeLanguage() {
                     insertText: "session['${1:key}']",
                     insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
                     documentation: 'Access session data'
+                },
+                {
+                    label: 'data_dir',
+                    kind: monaco.languages.CompletionItemKind.Variable,
+                    insertText: "os.path.join(data_dir, 'uploads', '${1:subdir}')",
+                    insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                    documentation: 'Persistent data directory (project root, or next to a compiled binary). Files under data_dir/uploads are served at /uploads/.'
                 },
                 {
                     label: 'request.form',

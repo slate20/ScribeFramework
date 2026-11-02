@@ -65,6 +65,47 @@ Edit `scribe.json`:
 
 **Don't commit secrets!** Use environment variables.
 
+## Uploaded Files
+
+Files your routes save under `data_dir/uploads/` (see
+[Template Syntax](02_TEMPLATE_SYNTAX.md#saving-uploaded-files-data_dir)) are
+served at `/uploads/<path>`. With `scribe serve`, `data_dir` is the project
+root, so back up `uploads/` together with your database. The route is
+public: anyone who knows a file's URL can download it.
+
+## Compiled Binaries (scribe-build)
+
+`scribe-build build` produces a single executable in `dist/`. At runtime,
+everything that has to persist lives **next to the executable**, wherever
+it is launched from:
+
+```
+dist/
+├── myapp           # the executable
+├── .env            # your settings (copy from .env.example)
+├── .env.example    # written by scribe-build; never overwritten
+├── app.db          # relative SQLite paths resolve here
+└── uploads/        # data_dir/uploads, served at /uploads/
+```
+
+**Configuration.** `SECRET_KEY` and database passwords are stripped from the
+build. Supply them in a `.env` file next to the executable, which is loaded
+on every start:
+
+```bash
+cp dist/.env.example dist/.env
+python3 -c "import secrets; print(secrets.token_hex(32))"   # paste into SECRET_KEY=
+```
+
+Supported settings: `SECRET_KEY`, `HOST`, `PORT` and
+`SCRIBE_DB_<NAME>_PASSWORD` (for example `SCRIBE_DB_DEFAULT_PASSWORD`).
+Real environment variables take precedence over `.env` values. Without a
+persisted `SECRET_KEY`, a new one is generated on each start and everyone is
+logged out.
+
+**Back up** `app.db`, `uploads/` and `.env` together. Pending migrations are
+applied automatically at startup.
+
 ## Nginx Reverse Proxy
 
 ```nginx

@@ -15,7 +15,8 @@ import glob
 import inspect
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from flask import Flask, request, session, g, render_template_string, Response, stream_with_context
+from flask import Flask, request, session, g, render_template_string, Response, stream_with_context, send_from_directory
+from werkzeug.exceptions import HTTPException
 from jinja2 import Template
 
 from scribe.parser import TemplateParser
@@ -228,6 +229,62 @@ def register_db_teardown(app: Flask):
                 db_manager.commit_all()
 
 
+UPLOADS_RULE = '/uploads/<path:filename>'
+
+
+def resolve_data_dir(base_dir: str) -> str:
+    """Return the directory where an app's persistent files live.
+
+    In a frozen scribe-build executable, base_dir is PyInstaller's onefile
+    extraction directory (sys._MEIPASS), which is recreated on every launch
+    and deleted on exit. Anything written there (uploads, a relative SQLite
+    database) is silently lost on restart, so use the directory that holds
+    the executable instead. Elsewhere, base_dir is already persistent.
+
+    The compiled launcher imports this, so keep it public and module-level.
+    """
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return base_dir
+
+
+def register_data_routes(app: Flask, routes: List):
+    """Serve user-uploaded files saved under <DATA_DIR>/uploads at /uploads/<path>.
+
+    The route is public: anyone with the URL can fetch the file. Skipped if
+    the project defines its own route with the same rule.
+    """
+    data_dir = app.config.get('DATA_DIR')
+    if not data_dir:
+        return
+    if any(route.path == UPLOADS_RULE for route in routes):
+        return
+    uploads_dir = os.path.join(data_dir, 'uploads')
+
+    # send_from_directory rejects path traversal and 404s on missing files.
+    @app.route(UPLOADS_RULE)
+    def scribe_uploads(filename):
+        return send_from_directory(uploads_dir, filename)
+
+
+def anchor_sqlite_paths(databases: Dict[str, Any], data_dir: str):
+    """Make relative SQLite database paths absolute under data_dir.
+
+    A relative path would otherwise resolve against the process's working
+    directory, which varies with how a compiled binary is launched.
+    In-memory databases are left alone.
+    """
+    for conn_config in databases.values():
+        if not isinstance(conn_config, dict):
+            continue
+        if str(conn_config.get('type', 'sqlite')).lower() != 'sqlite':
+            continue
+        db_path = conn_config.get('database', 'app.db')
+        if db_path == ':memory:' or os.path.isabs(db_path):
+            continue
+        conn_config['database'] = os.path.join(data_dir, db_path)
+
+
 def create_app(
     project_path: str = '.',
     config: Optional[Dict[str, Any]] = None
@@ -276,6 +333,10 @@ def create_app(
     # Store project path for GUI routes
     app.config['PROJECT_PATH'] = project_path
 
+    # Where uploads and other persistent files go. Exposed to templates as
+    # `data_dir` and served at /uploads/ (see register_data_routes).
+    app.config['DATA_DIR'] = project_path
+
     # Ensure secret key is set (required for sessions)
     if not app.config.get('SECRET_KEY'):
         import secrets
@@ -311,6 +372,9 @@ def create_app(
 
     # Add Jinja2 global functions
     setup_jinja_globals(app)
+
+    # Serve files saved under <DATA_DIR>/uploads
+    register_data_routes(app, routes)
 
     # Register automatic transaction management
     register_db_teardown(app)
@@ -403,6 +467,11 @@ def create_compiled_app(base_dir: str, config: Optional[Dict[str, Any]] = None) 
     app.config.update(app_config)
     app.config['PROJECT_PATH'] = app_data_dir
 
+    # base_dir is the onefile extraction dir in a frozen build and is deleted
+    # on exit; uploads and the database live next to the executable instead.
+    data_dir = resolve_data_dir(base_dir)
+    app.config['DATA_DIR'] = data_dir
+
     # SECRET_KEY is deliberately stripped from app_data/scribe.json at
     # build time (see scribe.builder.stage) so a real production secret is
     # never embedded in the shipped binary. An operator sets it via the
@@ -430,6 +499,8 @@ def create_compiled_app(base_dir: str, config: Optional[Dict[str, Any]] = None) 
             if env_password:
                 conn_config['password'] = env_password
 
+    anchor_sqlite_paths(app_config['databases'], data_dir)
+
     db = DatabaseManager(app_config)
     app.config['DB'] = db
 
@@ -452,6 +523,7 @@ def create_compiled_app(base_dir: str, config: Optional[Dict[str, Any]] = None) 
     apply_csrf_exemptions(app, csrf, routes)
 
     setup_jinja_globals(app)
+    register_data_routes(app, routes)
     register_db_teardown(app)
 
     print(f"\n✓ ScribeEngine app loaded from precompiled build ({len(routes)} route(s))")
@@ -704,7 +776,8 @@ def create_route_handler(route, db, helpers: Dict[str, Any], app: Flask, project
             request=request,
             g=g,
             helpers=helpers,
-            route_params=url_params
+            route_params=url_params,
+            data_dir=app.config.get('DATA_DIR'),
         )
         context.current_template = route.template
 
@@ -800,6 +873,10 @@ def create_route_handler(route, db, helpers: Dict[str, Any], app: Flask, project
                     return Response("", mimetype='text/event-stream')
                 return ''
 
+        except HTTPException:
+            # abort(404), require_admin() etc.: let Flask return the intended
+            # status instead of turning it into a 500.
+            raise
         except Exception as e:
             # In development, show detailed error
             if app.debug:

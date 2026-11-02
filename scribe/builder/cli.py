@@ -17,6 +17,46 @@ from scribe.builder.stage import stage_project
 from scribe.builder.spec_template import generate_spec, BASE_HIDDEN_IMPORTS
 from scribe.builder.pyinstaller_invoke import run_pyinstaller
 from scribe.builder.preflight import missing_runtime_dependencies, install_runtime_dependencies, find_missing_modules
+from scribe.migrations.config import get_databases_config
+
+ENV_EXAMPLE_TEMPLATE = """\
+# Copy this file to .env in this same directory and fill in real values.
+# Loaded automatically every time the compiled executable starts.
+# Without a persisted SECRET_KEY, a new one is generated on every
+# restart, which invalidates every existing login session.
+
+# Generate one with:
+#   python3 -c "import secrets; print(secrets.token_hex(32))"
+SECRET_KEY=
+
+# HOST=0.0.0.0
+# PORT=8000
+"""
+
+
+def render_env_example(app_config) -> str:
+    """Contents of the .env.example written next to a compiled executable,
+    with a commented password line for each non-SQLite connection."""
+    text = ENV_EXAMPLE_TEMPLATE
+    password_lines = [
+        f"# SCRIBE_DB_{name.upper()}_PASSWORD="
+        for name, conn in get_databases_config(app_config).items()
+        if isinstance(conn, dict) and str(conn.get('type', 'sqlite')).lower() != 'sqlite'
+    ]
+    if password_lines:
+        text += "\n# Database passwords (stripped from the build):\n" + "\n".join(password_lines) + "\n"
+    return text
+
+
+def write_env_example(output_dir, app_config) -> bool:
+    """Write <output_dir>/.env.example unless one already exists, so a file
+    the user edited is never overwritten. Returns True if written."""
+    path = os.path.join(output_dir, '.env.example')
+    if os.path.exists(path):
+        return False
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(render_env_example(app_config))
+    return True
 
 
 @click.group()
@@ -210,7 +250,13 @@ def build(path, name, output, venv, keep_build):
         size_mb = os.path.getsize(exe_path) / (1024 * 1024)
         click.echo(f"\n✓ Build successful: {exe_path} ({size_mb:.1f} MB)")
         click.echo(f"  Run it with: {exe_path}")
-        click.echo("  Configure via environment variables: HOST, PORT, SECRET_KEY, SCRIBE_DB_<NAME>_PASSWORD")
+        if write_env_example(output_dir, app_config):
+            click.echo(f"  Wrote {os.path.join(output_dir, '.env.example')}")
+        click.echo("  Configure it with a .env file next to the executable (copy .env.example),")
+        click.echo("  or with real environment variables, which take precedence:")
+        click.echo("    HOST, PORT, SECRET_KEY, SCRIBE_DB_<NAME>_PASSWORD")
+        click.echo("  Uploads (uploads/) and relative SQLite databases (e.g. app.db) are stored")
+        click.echo(f"  next to the executable, in {output_dir}")
     else:
         click.echo(f"\n✗ Expected output not found at {exe_path}")
         sys.exit(1)

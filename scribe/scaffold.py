@@ -77,6 +77,10 @@ GITIGNORE = r'''# Database
 *.sqlite
 *.sqlite3
 
+# Uploaded files and secrets (see data_dir in the docs)
+uploads/
+.env
+
 # Python
 __pycache__/
 *.py[cod]

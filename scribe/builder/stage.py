@@ -24,11 +24,38 @@ def _base_dir():
     return getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 
 
+def _load_env_file(env_dir):
+    """Load KEY=VALUE lines from a .env file in the persistent data directory
+    into os.environ, if one exists. This is the only durable way to
+    configure a double-clicked or service-launched binary, where there is
+    no shell to prefix real environment variables onto every launch.
+    Variables already set in the real environment take precedence over
+    .env values."""
+    env_path = os.path.join(env_dir, ".env")
+    if not os.path.isfile(env_path):
+        return
+    with open(env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if not key:
+                continue
+            os.environ.setdefault(key, value)
+
+
 def main():
-    from scribe.app import create_compiled_app
+    from scribe.app import create_compiled_app, resolve_data_dir
     from waitress import serve as waitress_serve
 
-    app = create_compiled_app(_base_dir())
+    base_dir = _base_dir()
+    # Must run before create_compiled_app, which reads SECRET_KEY and
+    # SCRIBE_DB_<NAME>_PASSWORD from os.environ.
+    _load_env_file(resolve_data_dir(base_dir))
+    app = create_compiled_app(base_dir)
     host = os.environ.get("HOST", "0.0.0.0")
     port = int(os.environ.get("PORT", "8000"))
     print(f"Serving on http://{host}:{port}")
