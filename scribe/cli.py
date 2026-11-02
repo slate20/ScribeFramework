@@ -267,7 +267,7 @@ def new(project_name, demo, path):
     click.echo(f"  1. Open http://localhost:5000")
     click.echo(f"  2. Edit app.stpl to add your own routes")
     click.echo(f"  3. Add tables in schemas/schema_default.py, then run 'scribe schema apply'")
-    click.echo(f"  4. Visit https://scribeframework.com/docs for guides")
+    click.echo(f"  4. Visit https://scribeframework.slatecapit.com/docs for guides")
 
 
 @cli.command()
@@ -1067,7 +1067,8 @@ def uninstall(yes):
     """
     Uninstall ScribeFramework from your system.
 
-    This removes the scribe executable from your PATH.
+    This removes the scribe executable from your PATH, along with
+    scribe-build if it's installed.
 
     Example:
         scribe uninstall
@@ -1082,28 +1083,45 @@ def uninstall(yes):
         click.echo("ScribeFramework is not installed (scribe command not found in PATH)")
         return
 
-    click.echo(f"ScribeFramework is installed at: {executable_path}")
+    # install.sh puts scribe-build next to scribe; fall back to PATH in case
+    # it was installed somewhere else.
+    build_path = os.path.join(os.path.dirname(executable_path), 'scribe-build')
+    if not os.path.isfile(build_path):
+        build_path = shutil.which('scribe-build')
+    paths = [executable_path] + ([build_path] if build_path else [])
+
+    click.echo("ScribeFramework is installed at:")
+    for path in paths:
+        click.echo(f"  {path}")
 
     if not yes:
         if not click.confirm("\nAre you sure you want to uninstall ScribeFramework?"):
             click.echo("Uninstall cancelled")
             return
 
-    try:
-        # Remove the executable
-        os.remove(executable_path)
+    removed = []
+    for path in paths:
+        try:
+            os.remove(path)
+            removed.append(path)
+
+        except PermissionError:
+            click.echo(f"\n✗ Permission denied removing {path}. It's in a system directory.")
+            click.echo(f"  Try running with sudo:")
+            click.echo(f"  sudo scribe uninstall")
+
+        except Exception as e:
+            click.echo(f"\n✗ Error removing {path}: {e}")
+            click.echo(f"  You may need to remove it manually.")
+
+    if len(removed) == len(paths):
         click.echo(f"\n✓ Successfully uninstalled ScribeFramework")
-        click.echo(f"  Removed: {executable_path}")
+    elif removed:
+        click.echo(f"\nPartially uninstalled ScribeFramework")
+    for path in removed:
+        click.echo(f"  Removed: {path}")
+    if len(removed) == len(paths):
         click.echo("\nThank you for using ScribeFramework!")
-
-    except PermissionError:
-        click.echo(f"\n✗ Permission denied. The executable is in a system directory.")
-        click.echo(f"  Try running with sudo:")
-        click.echo(f"  sudo scribe uninstall")
-
-    except Exception as e:
-        click.echo(f"\n✗ Error during uninstall: {e}")
-        click.echo(f"  You may need to manually remove: {executable_path}")
 
 
 if __name__ == '__main__':
