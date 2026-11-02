@@ -51,7 +51,8 @@ def build(path, name, output, venv, keep_build):
       1. Parses your .stpl routes and compiles each route's Python block
          and lib/ helpers to bytecode using your project's own venv Python
          (so the bytecode matches the interpreter that will run it).
-      2. Copies static/, migrations/, base.stpl, and a sanitized scribe.json
+      2. Copies static/, migrations/, base.stpl, any files your templates
+         {% include %} or {% extends %}, and a sanitized scribe.json
          (secrets stripped — see "Runtime configuration" below) into a
          staging directory.
       3. Runs PyInstaller through that same venv Python to freeze everything
@@ -156,10 +157,16 @@ def build(path, name, output, venv, keep_build):
 
     click.echo("\nStaging project (compiling routes and lib/ helpers)...")
     try:
-        app_data_dir, detected_imports = stage_project(project_path, build_dir, venv_python)
+        app_data_dir, detected_imports, template_warnings = stage_project(project_path, build_dir, venv_python)
     except Exception as e:
         click.echo(f"✗ Staging failed: {e}")
         sys.exit(1)
+
+    if template_warnings:
+        click.echo("\n⚠ Some files your templates include can't be bundled:")
+        for warning in template_warnings:
+            click.echo(f"    {warning}")
+        click.echo("  Routes that render them will fail in the compiled binary — continuing the build.")
 
     # Route Python blocks and lib/*.py are shipped as precompiled bytecode,
     # invisible to PyInstaller's own static import analysis — anything they

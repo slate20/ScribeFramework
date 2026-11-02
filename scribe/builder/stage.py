@@ -1,7 +1,8 @@
 """
 Stages a Scribe project into a self-contained `_scribe_build/` directory
 ready for PyInstaller: precompiled route bytecode, precompiled lib/
-helpers, verbatim static/migrations/base.stpl, a sanitized config, the
+helpers, verbatim static/migrations/base.stpl and any files templates
+include, a sanitized config, the
 scribe runtime package, and a generated __main__.py entry point.
 """
 
@@ -138,6 +139,22 @@ def stage_project(project_path: str, build_dir: str, venv_python: str):
     if os.path.isfile(base_stpl_src):
         shutil.copy2(base_stpl_src, os.path.join(app_data_dir, 'base.stpl'))
 
+    #    Any other file a template pulls in ({% include %}, {% extends %},
+    #    {% import %}, {% from %}). In dev these resolve against the project
+    #    root; in the binary they resolve against app_data/, so copy each one
+    #    to the same relative path there.
+    template_sources = [route.template for route in routes if route.template]
+    if os.path.isfile(base_stpl_src):
+        with open(base_stpl_src, 'r', encoding='utf-8') as f:
+            template_sources.append(f.read())
+    referenced, template_warnings = find_referenced_templates(project_path, template_sources)
+    for rel_path in referenced:
+        dst = os.path.join(app_data_dir, rel_path)
+        if os.path.exists(dst):
+            continue  # base.stpl, or already copied as part of static/
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(os.path.join(project_path, rel_path), dst)
+
     # 6. Sanitize scribe.json: never embed a real secret key or database
     #    password in the shipped binary. create_compiled_app() reads these
     #    back from the environment (SECRET_KEY, SCRIBE_DB_<NAME>_PASSWORD).
@@ -162,4 +179,53 @@ def stage_project(project_path: str, build_dir: str, venv_python: str):
     with open(os.path.join(build_dir, '__main__.py'), 'w', encoding='utf-8') as f:
         f.write(MAIN_PY_TEMPLATE)
 
-    return app_data_dir, detected_imports
+    return app_data_dir, detected_imports, template_warnings
+
+
+def find_referenced_templates(project_path: str, template_sources):
+    """
+    Find the project files that templates pull in by name, following
+    includes of includes.
+
+    Returns (rel_paths, warnings): sorted paths relative to project_path,
+    and messages about references that can't be shipped — a name that
+    isn't a literal string (so it can't be known at build time), a file
+    that doesn't exist, or a path outside the project.
+    """
+    from jinja2 import Environment, TemplateSyntaxError, meta
+
+    env = Environment()
+    found = set()
+    warnings = []
+    pending = list(template_sources)
+
+    while pending:
+        source = pending.pop()
+        try:
+            names = meta.find_referenced_templates(env.parse(source))
+        except TemplateSyntaxError:
+            # The route itself will fail at runtime with a clearer error than
+            # the builder could give; nothing to follow from here.
+            continue
+
+        for name in names:
+            if name is None:
+                warnings.append("a template includes a file by variable name, which can't be "
+                                "detected at build time; it won't be in the binary unless "
+                                "another template names it directly")
+                continue
+            rel_path = os.path.normpath(name)
+            full_path = os.path.join(project_path, rel_path)
+            if rel_path.startswith('..') or os.path.isabs(rel_path):
+                warnings.append(f"'{name}' is outside the project and won't be in the binary")
+                continue
+            if not os.path.isfile(full_path):
+                warnings.append(f"'{name}' is referenced by a template but doesn't exist")
+                continue
+            if rel_path in found:
+                continue
+            found.add(rel_path)
+            with open(full_path, 'r', encoding='utf-8') as f:
+                pending.append(f.read())
+
+    return sorted(found), sorted(set(warnings))
