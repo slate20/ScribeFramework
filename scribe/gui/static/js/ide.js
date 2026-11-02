@@ -441,21 +441,21 @@ function registerScribeLanguage() {
                 {
                     label: 'db.find',
                     kind: monaco.languages.CompletionItemKind.Method,
-                    insertText: "db.find('${1:table}', ${2:id})",
+                    insertText: "db['${1:default}'].find('${2:table}', ${3:id})",
                     insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
                     documentation: 'Find a record by ID'
                 },
                 {
                     label: 'db.where',
                     kind: monaco.languages.CompletionItemKind.Method,
-                    insertText: "db.where('${1:table}', ${2:column}=${3:value})",
+                    insertText: "db['${1:default}'].where('${2:table}', ${3:column}=${4:value})",
                     insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
                     documentation: 'Find records matching criteria'
                 },
                 {
                     label: 'db.table',
                     kind: monaco.languages.CompletionItemKind.Method,
-                    insertText: "db.table('${1:table}')$0",
+                    insertText: "db['${1:default}'].table('${2:table}')$0",
                     insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
                     documentation: 'Start a query builder chain'
                 },

@@ -18,7 +18,7 @@ Scribe eliminates the friction of jumping between files. Logic lives exactly whe
 {$
 # Straight Python logic with built-in DB helpers.
 # Functions in lib/ are auto-loaded and ready to use.
-data = db.table('sales').where(status='pending').all()
+data = db['default'].table('sales').where(status='pending').all()
 risk_score = calculate_risk_profile(data) 
 $}
 
@@ -103,4 +103,4 @@ Scribe doesn't sacrifice safety for speed. Every project comes with:
 
 ---
 
-**Scribe is currently in Alpha (v2.1.0).**
+**Scribe is currently in Alpha (v2.2.0).**
