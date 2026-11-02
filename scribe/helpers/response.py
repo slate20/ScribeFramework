@@ -82,7 +82,7 @@ def jsonify(*args, **kwargs):
     Example in template:
         {$
         from flask import jsonify
-        posts = db.table('posts').all()
+        posts = db['default'].table('posts').all()
         return jsonify({'posts': [dict(p) for p in posts]})
         $}
     """

@@ -77,12 +77,17 @@ GITIGNORE = r'''# Database
 *.sqlite
 *.sqlite3
 
+# Uploaded files and secrets (see data_dir in the docs)
+uploads/
+.env
+
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+.venv/
 venv/
 env/
 ENV/
@@ -98,7 +103,11 @@ ENV/
 Thumbs.db
 
 # ScribeFramework
-scribe.json  # May contain secrets
+# scribe.json may contain secrets (SECRET_KEY, database passwords)
+scribe.json
+# scribe-build output
+dist/
+_scribe_build/
 '''
 
 # {{nav_links}}, {{year}}, and {{project_name}} are filled in by project_files()
@@ -531,7 +540,15 @@ a:hover {
     gap: var(--spacing-sm);
 }
 
-input[type="text"] {
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="number"],
+input[type="search"],
+input[type="url"],
+input[type="date"],
+select,
+textarea {
     flex: 1;
     background: var(--bg-base);
     border: var(--border-width) solid var(--color-border);
@@ -543,8 +560,39 @@ input[type="text"] {
     outline: none;
 }
 
-input[type="text"]:focus {
+input[type="text"]:focus,
+input[type="email"]:focus,
+input[type="password"]:focus,
+input[type="number"]:focus,
+input[type="search"]:focus,
+input[type="url"]:focus,
+input[type="date"]:focus,
+select:focus,
+textarea:focus {
     border-color: var(--color-primary);
+}
+
+/* ================================================================
+   TABLES
+   ================================================================ */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: var(--spacing-lg);
+}
+
+th, td {
+    text-align: left;
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-bottom: var(--border-width) solid var(--color-border);
+}
+
+th {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
 }
 
 /* ================================================================
@@ -1005,7 +1053,15 @@ a:hover {
     gap: var(--spacing-sm);
 }
 
-input[type="text"] {
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="number"],
+input[type="search"],
+input[type="url"],
+input[type="date"],
+select,
+textarea {
     flex: 1;
     background: var(--bg-base);
     border: var(--border-width) solid var(--color-border);
@@ -1017,8 +1073,39 @@ input[type="text"] {
     outline: none;
 }
 
-input[type="text"]:focus {
+input[type="text"]:focus,
+input[type="email"]:focus,
+input[type="password"]:focus,
+input[type="number"]:focus,
+input[type="search"]:focus,
+input[type="url"]:focus,
+input[type="date"]:focus,
+select:focus,
+textarea:focus {
     border-color: var(--color-primary);
+}
+
+/* ================================================================
+   TABLES
+   ================================================================ */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: var(--spacing-lg);
+}
+
+th, td {
+    text-align: left;
+    padding: var(--spacing-sm) var(--spacing-md);
+    border-bottom: var(--border-width) solid var(--color-border);
+}
+
+th {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
 }
 
 /* ================================================================

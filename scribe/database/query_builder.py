@@ -13,7 +13,7 @@ class QueryBuilder:
     Fluent query builder for database operations.
 
     Example:
-        posts = db.table('posts')
+        posts = db['default'].table('posts')
             .where(published=True)
             .where(user_id=123)
             .order_by('-created_at')
@@ -50,7 +50,7 @@ class QueryBuilder:
             Self for chaining
 
         Example:
-            db.table('users').select('id', 'username', 'email').all()
+            db['default'].table('users').select('id', 'username', 'email').all()
         """
         self._select_columns = list(columns) if columns else ['*']
         return self
@@ -66,7 +66,7 @@ class QueryBuilder:
             Self for chaining
 
         Example:
-            db.table('posts').where(published=True, user_id=123)
+            db['default'].table('posts').where(published=True, user_id=123)
         """
         for column, value in conditions.items():
             self._where_conditions.append((column, '=', value))
@@ -83,7 +83,7 @@ class QueryBuilder:
             Self for chaining
 
         Example:
-            db.table('users').where_not(deleted=True)
+            db['default'].table('users').where_not(deleted=True)
         """
         for column, value in conditions.items():
             self._where_conditions.append((column, '!=', value))
@@ -101,7 +101,7 @@ class QueryBuilder:
             Self for chaining
 
         Example:
-            db.table('posts').where_in('status', ['published', 'draft'])
+            db['default'].table('posts').where_in('status', ['published', 'draft'])
         """
         self._where_conditions.append((column, 'IN', values))
         return self
@@ -118,7 +118,7 @@ class QueryBuilder:
             Self for chaining
 
         Example:
-            db.table('users').where_like('email', '%@example.com')
+            db['default'].table('users').where_like('email', '%@example.com')
         """
         self._where_conditions.append((column, 'LIKE', pattern))
         return self
@@ -154,7 +154,7 @@ class QueryBuilder:
             Self for chaining
 
         Example:
-            db.table('posts').order_by('-created_at', 'title')
+            db['default'].table('posts').order_by('-created_at', 'title')
             # ORDER BY created_at DESC, title ASC
         """
         for column in columns:
@@ -177,7 +177,7 @@ class QueryBuilder:
             Self for chaining
 
         Example:
-            db.table('posts').limit(10)
+            db['default'].table('posts').limit(10)
         """
         self._limit_value = count
         return self
@@ -193,7 +193,7 @@ class QueryBuilder:
             Self for chaining
 
         Example:
-            db.table('posts').limit(10).offset(20)  # Page 3
+            db['default'].table('posts').limit(10).offset(20)  # Page 3
         """
         self._offset_value = count
         return self
@@ -249,7 +249,7 @@ class QueryBuilder:
             List of Row objects
 
         Example:
-            posts = db.table('posts').where(published=True).all()
+            posts = db['default'].table('posts').where(published=True).all()
         """
         sql, params = self._build_query()
         return self.adapter.query(sql, params)
@@ -262,7 +262,7 @@ class QueryBuilder:
             Row object or None if no results
 
         Example:
-            post = db.table('posts').where(id=123).first()
+            post = db['default'].table('posts').where(id=123).first()
         """
         # Add LIMIT 1 if not already set
         original_limit = self._limit_value
@@ -284,7 +284,7 @@ class QueryBuilder:
             Number of rows
 
         Example:
-            total_posts = db.table('posts').where(published=True).count()
+            total_posts = db['default'].table('posts').where(published=True).count()
         """
         # Save original select columns
         original_select = self._select_columns
@@ -308,7 +308,7 @@ class QueryBuilder:
             True if at least one row exists
 
         Example:
-            if db.table('users').where(email=email).exists():
+            if db['default'].table('users').where(email=email).exists():
                 print("Email already taken")
         """
         return self.count() > 0
@@ -324,7 +324,7 @@ class QueryBuilder:
             List of values
 
         Example:
-            user_ids = db.table('posts').where(published=True).pluck('user_id')
+            user_ids = db['default'].table('posts').where(published=True).pluck('user_id')
         """
         # Save original select columns
         original_select = self._select_columns

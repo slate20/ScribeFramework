@@ -61,6 +61,42 @@ $}
 - `redirect()` - Redirect to URL
 - `abort()` - Return HTTP error
 - `jsonify()` - Return JSON response
+- `data_dir` - Persistent data directory (see below)
+
+### Saving Uploaded Files (`data_dir`)
+
+`data_dir` is the directory where files your app writes will persist: the
+project root under `scribe dev` / `scribe serve`, and the directory that
+holds the executable in a `scribe-build` binary. Anything saved under
+`data_dir/uploads/` is served at `/uploads/<path>`.
+
+```python
+{$
+import os, uuid
+uploaded = request.files.get('receipt')
+if uploaded and uploaded.filename:
+    ext = os.path.splitext(uploaded.filename)[1].lower()
+    safe_name = f"{uuid.uuid4().hex}{ext}"
+    save_dir = os.path.join(data_dir, 'uploads', 'receipts')
+    os.makedirs(save_dir, exist_ok=True)
+    uploaded.save(os.path.join(save_dir, safe_name))
+    receipt_path = f"receipts/{safe_name}"   # store this in the database
+$}
+<img src="/uploads/{{ receipt_path }}">
+```
+
+**Never build persistent paths from `__file__` or `static/`.** In a compiled
+binary, your templates and `lib/` modules run from a temporary extraction
+directory that is deleted on exit, so files saved there are silently lost on
+every restart. Helpers in `lib/` should take `data_dir` as a parameter.
+
+Files under `/uploads/` are **public**: anyone with the URL can fetch them.
+Use unguessable names (as above). For files that must stay private, store
+them outside `data_dir/uploads/` and serve them from your own route behind
+`@require_auth`. A project that defines its own
+`@route('/uploads/<path:filename>')` replaces the built-in route.
+
+`data_dir` is available in `{$ $}` blocks only, not in Jinja2 expressions.
 
 ## Jinja2 Templates
 
@@ -206,6 +242,9 @@ if not authorized:
     return abort(403)  # Forbidden
 $}
 ```
+
+`abort()` can also be called from a `lib/` helper (for example a permission
+check); the response gets the status code you passed.
 
 ## Layout Inheritance
 
